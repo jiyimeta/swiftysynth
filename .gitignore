@@ -1,0 +1,12 @@
+# Build artifacts
+.build/
+.swiftpm/
+Tools/oracle/target/
+
+# Reference clones (pinned by commit hash in Tests/MeltySynthTests/Fixtures/README.md)
+.reference/
+
+# Superpowers docs stay local in this public repo
+docs/superpowers/
+
+.DS_Store
