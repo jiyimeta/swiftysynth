@@ -71,6 +71,14 @@ struct ZoneInfo {
 final class Zone {
     let generators: [Generator]
 
+    /// The empty zone, used as the base setting when an instrument/preset has
+    /// no global zone. Mirrors `Zone.Empty` in `Zone.cs`, which is itself a
+    /// computed property returning a fresh instance on every access (not a
+    /// singleton) — a computed property here (rather than a stored `static
+    /// let`) also sidesteps Swift 6 strict-concurrency's "shared mutable
+    /// global state" check for this non-`Sendable` class.
+    static var empty: Zone { Zone(generators: []) }
+
     init(generators: [Generator]) {
         self.generators = generators
     }
