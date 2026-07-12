@@ -36,6 +36,36 @@ public final class SampleHeader {
         sampleType = Int32(try reader.readUInt16())
     }
 
+    /// Reads a `shdr` sub-chunk. Each record is 46 bytes (20-byte
+    /// fixed-length name + five little-endian `Int32` fields + a `UInt8` + a
+    /// signed `Int8` + two `UInt16` fields). The last record is the `EOS`
+    /// terminator; unlike `InstrumentInfo.create`/`PresetInfo.create` (which
+    /// return the terminator for their caller to drop), this mirrors
+    /// `SampleHeader.ReadFromChunk` exactly: the terminator is read here and
+    /// dropped before returning.
+    static func readFromChunk(reader: BinaryReader, size: Int) throws -> [SampleHeader] {
+        // C#'s `new SampleHeader[size / 46 - 1]` throws (catchably) on a
+        // negative length; a zero-length (or otherwise sub-terminator) chunk
+        // would make Swift's `0..<(size / 46 - 1)` build an inverted range
+        // and trap, so reject it here to preserve the "never trap the host
+        // app" invariant.
+        guard size % 46 == 0 && size / 46 - 1 >= 0 else {
+            throw MeltySynthError.invalidSoundFont("The sample header list is invalid.")
+        }
+
+        var headers: [SampleHeader] = []
+        headers.reserveCapacity(size / 46 - 1)
+
+        for _ in 0..<(size / 46 - 1) {
+            headers.append(try SampleHeader(reader: reader))
+        }
+
+        // The last one is the terminator.
+        _ = try SampleHeader(reader: reader)
+
+        return headers
+    }
+
     /// Direct-construction initializer for tests (no C# analogue; C# only
     /// has the reader-based private constructor plus a parameterless
     /// `Default` singleton).
