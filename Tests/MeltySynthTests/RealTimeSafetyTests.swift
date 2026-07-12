@@ -102,4 +102,44 @@ struct RealTimeSafetyTests {
                 "all preplanned events must have fired on the render thread")
     }
     #endif
+
+    /// **G3 (zero-alloc)** — after warm-up, N further renders (including noteOn/noteOff,
+    /// which the spike drives from the render thread) allocate nothing: default-malloc-zone
+    /// deltas are exactly zero.
+    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
+    func zeroAllocationAfterWarmup() throws {
+        let font = try SoundFont(url: FixtureSF2.url)
+        let synth = try Synthesizer(soundFont: font, sampleRate: 44_100)
+        var left = [Float](repeating: 0, count: 512)
+        var right = [Float](repeating: 0, count: 512)
+
+        // Warm-up: first-touch lazy runtime state, envelope stage transitions, voice
+        // spawn/free cycles.
+        synth.noteOn(key: 60, velocity: 100)
+        for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
+        synth.noteOff(key: 60)
+        for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
+
+        var before = malloc_statistics_t()
+        malloc_zone_statistics(malloc_default_zone(), &before)
+
+        // Measured region: 1000 callbacks' worth of rendering plus note events.
+        // NO print/log in here.
+        synth.noteOn(key: 60, velocity: 100)
+        for i in 0..<1_000 {
+            if i == 300 { synth.noteOff(key: 60) }
+            if i == 400 { synth.noteOn(key: 64, velocity: 90) }
+            if i == 800 { synth.noteOff(key: 64) }
+            renderInto(synth, &left, &right, 0..<512)
+        }
+
+        var after = malloc_statistics_t()
+        malloc_zone_statistics(malloc_default_zone(), &after)
+
+        print("G3-alloc: blocks_in_use \(before.blocks_in_use) → \(after.blocks_in_use), size_in_use \(before.size_in_use) → \(after.size_in_use)")
+        #expect(after.blocks_in_use == before.blocks_in_use,
+                "render path allocated: blocks_in_use delta = \(Int(after.blocks_in_use) - Int(before.blocks_in_use))")
+        #expect(after.size_in_use == before.size_in_use,
+                "render path allocated: size_in_use delta = \(Int(after.size_in_use) - Int(before.size_in_use))")
+    }
 }
