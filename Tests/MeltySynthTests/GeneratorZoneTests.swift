@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MeltySynth
 
@@ -57,6 +58,29 @@ struct GeneratorZoneTests {
         let infos = try ZoneInfo.create(reader: BinaryReader(data: w.data), size: 4)
         #expect(throws: MeltySynthError.self) {
             _ = try Zone.create(infos: infos, generators: [])
+        }
+    }
+
+    @Test func readFromChunkRejectsZeroLengthChunkWithoutTrapping() {
+        // size == 0 passes the `% 4` check but would make `0..<(size/4 - 1)`
+        // an inverted range and trap; it must throw a catchable error instead.
+        #expect(throws: MeltySynthError.self) {
+            _ = try Generator.readFromChunk(reader: BinaryReader(data: Data()), size: 0)
+        }
+    }
+
+    @Test func zoneCreateRejectsOutOfRangeBagIndicesWithoutTrapping() throws {
+        var w = ByteWriter()
+        // First record's generatorCount = 5 - 0 = 5, but we supply only two
+        // generators, so start + count (5) runs past the end and would trap
+        // the slice subscript; it must throw a catchable error instead.
+        for (g, m) in [(0, 0), (5, 0)] {  // second record is the terminal
+            w.u16(UInt16(g)); w.u16(UInt16(m))
+        }
+        let infos = try ZoneInfo.create(reader: BinaryReader(data: w.data), size: 8)
+        let gens = (0..<2).map { Generator(type: .startAddressOffset, value: UInt16($0)) }
+        #expect(throws: MeltySynthError.self) {
+            _ = try Zone.create(infos: infos, generators: gens)
         }
     }
 

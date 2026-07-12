@@ -75,10 +75,19 @@ final class Zone {
         self.generators = generators
     }
 
-    private init(info: ZoneInfo, generators: [Generator]) {
+    private init(info: ZoneInfo, generators: [Generator]) throws {
         let start = info.generatorIndex
-        let end = start + info.generatorCount
-        self.generators = Array(generators[start..<end])
+        let count = info.generatorCount
+        // The bag indices come straight from raw pbag/ibag data and are not
+        // otherwise validated against the actual generator array; corrupt or
+        // non-monotonic data can produce a negative offset/count or a slice
+        // running past the end. C#'s `ArraySegment<Generator>(generators,
+        // offset, count)` throws on those; validate here so the Swift slice
+        // subscript never traps.
+        guard start >= 0, count >= 0, start + count <= generators.count else {
+            throw MeltySynthError.invalidSoundFont("The zone contains an invalid generator range.")
+        }
+        self.generators = Array(generators[start..<(start + count)])
     }
 
     /// Slices `generators` into zones according to `infos`. The last info
@@ -91,7 +100,7 @@ final class Zone {
         var zones: [Zone] = []
         zones.reserveCapacity(infos.count - 1)
         for i in 0..<(infos.count - 1) {
-            zones.append(Zone(info: infos[i], generators: generators))
+            zones.append(try Zone(info: infos[i], generators: generators))
         }
 
         return zones

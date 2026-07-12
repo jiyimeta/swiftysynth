@@ -98,7 +98,11 @@ struct Generator {
     /// Reads a `pgen`/`igen` sub-chunk. Each record is 4 bytes (type + value);
     /// the final record is a terminator and is read but dropped.
     static func readFromChunk(reader: BinaryReader, size: Int) throws -> [Generator] {
-        guard size % 4 == 0 else {
+        // C#'s `new Generator[size / 4 - 1]` throws on a negative length; a
+        // zero-length (or otherwise sub-terminator) chunk would make Swift's
+        // `0..<(size / 4 - 1)` build an inverted range and trap, so reject it
+        // here to preserve the "never trap the host app" invariant.
+        guard size % 4 == 0 && size / 4 - 1 >= 0 else {
             throw MeltySynthError.invalidSoundFont("The generator list is invalid.")
         }
 
