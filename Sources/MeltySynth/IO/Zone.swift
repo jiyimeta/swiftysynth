@@ -19,7 +19,17 @@ struct ZoneInfo {
     /// the difference to the *next* record's index; the terminal (last)
     /// record therefore has no next record and its counts are left at 0.
     static func create(reader: BinaryReader, size: Int) throws -> [ZoneInfo] {
-        guard size % 4 == 0 else {
+        // A negative `size` that is still a multiple of 4 (e.g. a corrupt
+        // pbag/ibag chunk length) would make `count` negative and Swift's
+        // `0..<count` build an inverted range and trap. Reject it up front
+        // to preserve the "never trap the host app" invariant, matching the
+        // sibling readers (`Generator.readFromChunk`,
+        // `SampleHeader.readFromChunk`, `InstrumentInfo.create`,
+        // `PresetInfo.create`). Unlike those, `ZoneInfo` keeps every record
+        // (including the terminal), so there is no `- 1` in the count and a
+        // zero-length chunk (empty zone list) is left for the caller
+        // (`Zone.create`) to reject, not this guard.
+        guard size >= 0, size % 4 == 0 else {
             throw MeltySynthError.invalidSoundFont("The zone list is invalid.")
         }
 

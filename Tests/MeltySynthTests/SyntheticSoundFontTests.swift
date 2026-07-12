@@ -4,11 +4,27 @@ import Testing
 
 /// Builds a minimal, structurally valid SF2 in memory:
 /// 1 preset ("Piano", bank 0, patch 0) → 1 instrument ("TestInst") → 1 sample ("TestSample").
+///
+/// The default arguments produce a spec-valid font that passes
+/// `SoundFont`'s ported `CheckSamples`/`CheckRegions` bounds checks: the
+/// `smpl` chunk carries 12 samples so `waveData.count - 4 == 8` leaves room
+/// for the sample's `end == 8`. The parameters exist so the regression tests
+/// below can build otherwise-valid fonts that violate exactly one bound.
 enum SyntheticSF2 {
-    static func minimal() -> Data {
+    static func minimal(
+        smplValues: [Int16] = [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 0, 0, 0, 0],
+        sampleStart: UInt32 = 0,
+        sampleEnd: UInt32 = 8,
+        sampleStartLoop: UInt32 = 2,
+        sampleEndLoop: UInt32 = 6,
+        // Instrument-zone generators, applied in order; the last must be the
+        // sampleID (53) terminator so the zone is treated as local, not
+        // global. Default: sampleID = 0 only.
+        instrumentGenerators: [(type: UInt16, value: UInt16)] = [(53, 0)]
+    ) -> Data {
         // sdta ------------------------------------------------------------------
         var smpl = ByteWriter()
-        for v: Int16 in [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000] { smpl.i16(v) }
+        for v in smplValues { smpl.i16(v) }
         var sdta = ByteWriter()
         sdta.fourCC("sdta")
         sdta.chunk("smpl", smpl)
@@ -45,22 +61,22 @@ enum SyntheticSF2 {
 
         var inst = ByteWriter()
         inst.fixedString("TestInst", length: 20); inst.u16(0)
-        inst.fixedString("EOI", length: 20); inst.u16(1)
+        inst.fixedString("EOI", length: 20); inst.u16(UInt16(instrumentGenerators.count))
 
         var ibag = ByteWriter()
         ibag.u16(0); ibag.u16(0)
-        ibag.u16(1); ibag.u16(0)
+        ibag.u16(UInt16(instrumentGenerators.count)); ibag.u16(0)
 
         var imod = ByteWriter()
         imod.bytes([UInt8](repeating: 0, count: 10))
 
         var igen = ByteWriter()
-        igen.u16(53); igen.u16(0)                      // sampleID = 0
+        for gen in instrumentGenerators { igen.u16(gen.type); igen.u16(gen.value) }
         igen.u16(0); igen.u16(0)                       // terminal
 
         var shdr = ByteWriter()
         shdr.fixedString("TestSample", length: 20)
-        shdr.u32(0); shdr.u32(8); shdr.u32(2); shdr.u32(6)
+        shdr.u32(sampleStart); shdr.u32(sampleEnd); shdr.u32(sampleStartLoop); shdr.u32(sampleEndLoop)
         shdr.u32(44_100); shdr.u8(60); shdr.i8(0); shdr.u16(0); shdr.u16(1)
         shdr.fixedString("EOS", length: 20)            // terminal (46 bytes total)
         shdr.bytes([UInt8](repeating: 0, count: 26))
@@ -98,7 +114,7 @@ struct SyntheticSoundFontTests {
         #expect(font.info.version.minor == 1)
         #expect(font.info.bankName == "Test Font")
         #expect(font.bitsPerSample == 16)
-        #expect(font.waveData == [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000])
+        #expect(font.waveData == [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 0, 0, 0, 0])
         #expect(font.presets.count == 1)
         #expect(font.instruments.count == 1)
         #expect(font.sampleHeaders.count == 1)
@@ -121,6 +137,39 @@ struct SyntheticSoundFontTests {
     @Test func rejectsNonSoundFontData() {
         #expect(throws: MeltySynthError.self) {
             _ = try SoundFont(data: Data([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]))
+        }
+    }
+
+    /// Proves `CheckSamples` runs on load: with only 8 `smpl` samples,
+    /// `waveData.count - 4 == 4`, so the sample's raw `end == 8` violates
+    /// `0 < end <= sampleCount` and load must throw rather than "succeed".
+    @Test func rejectsSampleEndOutOfRange() {
+        #expect(throws: MeltySynthError.self) {
+            _ = try SoundFont(
+                data: SyntheticSF2.minimal(smplValues: [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000])
+            )
+        }
+    }
+
+    /// Proves `CheckRegions` runs on load: the raw sample header stays in
+    /// bounds (so `CheckSamples` passes), but a `startAddressOffset`
+    /// generator pushes the region's offset-applied `sampleStart` to 100,
+    /// out of the `0 <= sampleStart < sampleCount (8)` range, so load must
+    /// throw.
+    @Test func rejectsRegionAddressOutOfRange() {
+        #expect(throws: MeltySynthError.self) {
+            _ = try SoundFont(
+                data: SyntheticSF2.minimal(instrumentGenerators: [(0, 100), (53, 0)])
+            )
+        }
+    }
+
+    /// Proves `ZoneInfo.create` rejects a malformed (negative-multiple-of-4)
+    /// bag chunk size instead of building an inverted range and trapping —
+    /// now reachable through `SoundFontParameters`' pbag/ibag calls.
+    @Test func rejectsMalformedBagChunkSize() {
+        #expect(throws: MeltySynthError.self) {
+            _ = try ZoneInfo.create(reader: BinaryReader(data: Data()), size: -4)
         }
     }
 }
