@@ -8,7 +8,7 @@ when it is absent.
 ## Reference SF2
 
 - Locked path: `GeneralUser-GS.sf2`
-- SHA-256: (recorded in Task 5 from the render-note sidecar)
+- SHA-256: `9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe`
 
 ## Pinned reference implementations (gitignored clones under `.reference/`)
 
@@ -41,4 +41,12 @@ mirrors — see the schema documented in `.superpowers/sdd/task-4-brief.md`.
 
 ## Regeneration (manual — tests never invoke the oracle)
 
-Recorded in Task 5 once the vectors are generated.
+```sh
+cargo build --release --manifest-path Tools/oracle/Cargo.toml
+Tools/oracle/target/release/oracle dump-font "<sf2-path>" Tests/MeltySynthTests/Fixtures/generaluser-gs-dump.json
+Tools/oracle/target/release/oracle render-note "<sf2-path>" Tests/MeltySynthTests/Fixtures/note-c4-vel100.wav Tests/MeltySynthTests/Fixtures/note-c4-vel100.json
+```
+
+The fixture note: bank 0 / preset 0, key 60 (C4), velocity 100, 44.1 kHz stereo,
+noteOn at frame 0, noteOff at frame 88200 (rendered as two chunks: 88200 then 132300
+frames), 220500 frames total, master volume 0.5, block size 64, dry (no reverb/chorus).

@@ -1,0 +1,16 @@
+{
+  "bank": 0,
+  "blockSize": 64,
+  "enableReverbAndChorus": false,
+  "key": 60,
+  "masterVolume": 0.5,
+  "maximumPolyphony": 8,
+  "noteOffFrame": 88200,
+  "noteOnFrame": 0,
+  "patch": 0,
+  "rustysynthVersion": "1.3.6",
+  "sampleRate": 44100,
+  "soundFontSha256": "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe",
+  "totalFrames": 220500,
+  "velocity": 100
+}

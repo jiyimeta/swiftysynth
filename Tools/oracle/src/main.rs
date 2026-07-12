@@ -319,7 +319,74 @@ fn pair_json(pi: usize, pr: &PresetRegion, ii: usize, ir: &InstrumentRegion) -> 
     })
 }
 
-fn render_note(_sf2_path: &str, _wav_path: &str, _json_path: &str) -> ExitCode {
-    eprintln!("render-note is implemented in Task 5");
-    ExitCode::FAILURE
+fn render_note(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{Synthesizer, SynthesizerSettings};
+
+    let font_bytes = fs::read(sf2_path).expect("cannot read sf2");
+    let font_sha = hex::encode(Sha256::digest(&font_bytes));
+    let mut cursor = std::io::Cursor::new(font_bytes);
+    let font = Arc::new(SoundFont::new(&mut cursor).expect("cannot parse sf2"));
+
+    // Equivalence-critical settings: block 64, dry render (the spike has no effects),
+    // fixed pool 8, master volume 0.5.
+    let mut settings = SynthesizerSettings::new(44_100);
+    settings.block_size = 64;
+    settings.maximum_polyphony = 8;
+    settings.enable_reverb_and_chorus = false;
+    let mut synth = Synthesizer::new(&font, &settings).expect("cannot create synthesizer");
+    synth.set_master_volume(0.5);
+
+    const NOTE_OFF_FRAME: usize = 88_200; // 2.0 s
+    const TOTAL_FRAMES: usize = 220_500; // 5.0 s
+    let mut left = vec![0.0f32; TOTAL_FRAMES];
+    let mut right = vec![0.0f32; TOTAL_FRAMES];
+
+    // Two-chunk render matching the Swift G2 test EXACTLY. 88200 is not a multiple of the
+    // 64-frame internal block, so the note-off lands mid-carry; because both sides render
+    // the same two chunk sizes, the release starts at the same internal block boundary in
+    // both implementations. Do NOT render 220500 frames in one call with a scheduled event.
+    synth.note_on(0, 60, 100);
+    synth.render(&mut left[..NOTE_OFF_FRAME], &mut right[..NOTE_OFF_FRAME]);
+    synth.note_off(0, 60);
+    synth.render(&mut left[NOTE_OFF_FRAME..], &mut right[NOTE_OFF_FRAME..]);
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 44_100,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(wav_path, spec).expect("cannot create wav");
+    for i in 0..TOTAL_FRAMES {
+        writer.write_sample(left[i]).unwrap();
+        writer.write_sample(right[i]).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    let sidecar = json!({
+        "bank": 0,
+        "patch": 0,
+        "key": 60,
+        "velocity": 100,
+        "sampleRate": 44_100,
+        "noteOnFrame": 0,
+        "noteOffFrame": NOTE_OFF_FRAME,
+        "totalFrames": TOTAL_FRAMES,
+        "masterVolume": 0.5,
+        "blockSize": 64,
+        "maximumPolyphony": 8,
+        "enableReverbAndChorus": false,
+        "rustysynthVersion": RUSTYSYNTH_VERSION,
+        "soundFontSha256": font_sha,
+    });
+    fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap()).expect("cannot write sidecar");
+    println!("wrote {wav_path} (peak {peak}) and {json_path}");
+    ExitCode::SUCCESS
 }
