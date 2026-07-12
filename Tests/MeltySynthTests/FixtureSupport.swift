@@ -43,3 +43,17 @@ func smplSHA256(_ samples: [Int16]) -> String {
     let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
     return sha256Hex(data)
 }
+
+/// Renders `range` of `synth`'s output into the matching slice of `left`/`right`.
+/// Exercises `Synthesizer.render`'s `UnsafeMutableBufferPointer` entry point
+/// against a plain `[Float]`-backed caller buffer, one arbitrary-sized chunk
+/// at a time (used to drive the partial-block carry across odd call sizes).
+func renderInto(_ synth: Synthesizer, _ left: inout [Float], _ right: inout [Float], _ range: Range<Int>) {
+    left.withUnsafeMutableBufferPointer { lp in
+        right.withUnsafeMutableBufferPointer { rp in
+            synth.render(
+                left: UnsafeMutableBufferPointer(rebasing: lp[range]),
+                right: UnsafeMutableBufferPointer(rebasing: rp[range]))
+        }
+    }
+}
