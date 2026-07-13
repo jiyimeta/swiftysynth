@@ -79,7 +79,7 @@ public final class Synthesizer {
         }
         self.defaultPreset = preset
 
-        self.channel = Channel()
+        self.channel = Channel(isPercussionChannel: false)
 
         var voices: [Voice] = []
         voices.reserveCapacity(maximumPolyphony)
