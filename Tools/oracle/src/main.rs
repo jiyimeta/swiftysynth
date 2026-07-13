@@ -18,9 +18,11 @@ fn main() -> ExitCode {
     match args.get(1).map(String::as_str) {
         Some("dump-font") if args.len() == 4 => dump_font(&args[2], &args[3]),
         Some("render-note") if args.len() == 5 => render_note(&args[2], &args[3], &args[4]),
+        Some("probe") if args.len() == 3 => probe(&args[2]),
         _ => {
             eprintln!("usage: oracle dump-font <sf2> <out.json>");
             eprintln!("       oracle render-note <sf2> <out.wav> <out.json>");
+            eprintln!("       oracle probe <sf2>");
             ExitCode::FAILURE
         }
     }
@@ -388,5 +390,77 @@ fn render_note(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
     });
     fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap()).expect("cannot write sidecar");
     println!("wrote {wav_path} (peak {peak}) and {json_path}");
+    ExitCode::SUCCESS
+}
+
+/// Phase-0 sufficiency probe (full-port spec §7 "Phase 0 de-risk").
+/// Exercises, through rustysynth 1.3.6's PUBLIC API only:
+///   (1) multichannel process_midi_message + dry render   → needed by G2-multi (P1)
+///   (2) effects-on end-to-end render                     → needed by G2-fx e2e (P2)
+///   (3) MidiFileSequencer construction + getters          → needed by G-midi (P3)
+/// Source-level finding recorded here because it is NOT probe-able from this
+/// binary: Reverb and Chorus are pub(crate) (reverb.rs / chorus.rs), so
+/// component-level effect taps are unavailable — P2 must plan its
+/// component-level G2-fx vectors around that (e.g. a vendored oracle patch).
+fn probe(sf2_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{MidiFileSequencer, Synthesizer, SynthesizerSettings};
+
+    let font = Arc::new(load_font(sf2_path));
+
+    // (1) Multichannel dispatch, dry.
+    let mut dry = SynthesizerSettings::new(44_100);
+    dry.block_size = 64;
+    dry.maximum_polyphony = 64;
+    dry.enable_reverb_and_chorus = false;
+    let mut synth = Synthesizer::new(&font, &dry).expect("cannot create dry synthesizer");
+    for channel in 0..16 {
+        synth.process_midi_message(channel, 0xC0, 0, 0); // program change
+        synth.process_midi_message(channel, 0x90, 60, 100); // note on
+    }
+    let mut left = vec![0.0f32; 44_100];
+    let mut right = vec![0.0f32; 44_100];
+    synth.render(&mut left, &mut right);
+    let dry_peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    // (2) Effects-on end-to-end render.
+    let mut wet = SynthesizerSettings::new(44_100);
+    wet.block_size = 64;
+    wet.maximum_polyphony = 64;
+    wet.enable_reverb_and_chorus = true;
+    let mut wet_synth = Synthesizer::new(&font, &wet).expect("cannot create wet synthesizer");
+    wet_synth.process_midi_message(0, 0x90, 60, 100);
+    wet_synth.render(&mut left, &mut right);
+    let wet_peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    // (3) Sequencer is public and constructible.
+    let seq_settings = SynthesizerSettings::new(44_100);
+    let seq_synth =
+        Synthesizer::new(&font, &seq_settings).expect("cannot create sequencer synthesizer");
+    let sequencer = MidiFileSequencer::new(seq_synth);
+    let end_of_sequence = sequencer.end_of_sequence();
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "multichannelProcessMidiMessage": "ok (pub, 16 channels dispatched)",
+            "dryRenderPeak": dry_peak,
+            "effectsOnRender": "ok",
+            "effectsOnRenderPeak": wet_peak,
+            "midiFileSequencerPublic": true,
+            "sequencerEndOfSequence": end_of_sequence,
+            "reverbChorusComponentTaps":
+                "UNAVAILABLE — pub(crate) in rustysynth 1.3.6; P2 planning input, not a P1 blocker",
+            "rustysynthVersion": RUSTYSYNTH_VERSION,
+        }))
+        .unwrap()
+    );
     ExitCode::SUCCESS
 }
