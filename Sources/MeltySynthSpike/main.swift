@@ -187,7 +187,15 @@ case "play":
 
 case "export":
     guard arguments.count == 4 else { fail("usage: MeltySynthSpike export <sf2> <out.wav>") }
-    let synthesizer = makeSynthesizer(sf2Path: arguments[2])
+    // `nonisolated(unsafe)`: this top-level script is single-threaded end to end (the
+    // "export" case never touches an audio-thread render callback, unlike "play"'s
+    // `RenderHarness`), so there is no actual concurrent access to race — but whole-module
+    // optimization's region-based isolation checker (release/-wmo builds only) sees this
+    // MainActor-isolated top-level `let` used inside nested `withUnsafeMutableBufferPointer`
+    // closures alongside the OTHER switch case's genuinely-concurrent nonisolated render
+    // block (same `Synthesizer` type, different instance) and flags a possible race that
+    // cannot occur here.
+    nonisolated(unsafe) let synthesizer = makeSynthesizer(sf2Path: arguments[2])
     var left = [Float](repeating: 0, count: 220_500)
     var right = [Float](repeating: 0, count: 220_500)
 
