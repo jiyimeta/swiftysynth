@@ -61,7 +61,12 @@ enum SyntheticSF2 {
 
         var inst = ByteWriter()
         inst.fixedString("TestInst", length: 20); inst.u16(0)
-        inst.fixedString("EOI", length: 20); inst.u16(UInt16(instrumentGenerators.count))
+        // The "EOI" terminal record's u16 is a zoneStartIndex — an index into
+        // the ibag/zone array, not a generator count. This builder always
+        // produces exactly one real zone (see the ibag chunk below), so the
+        // terminal always points past that single zone: fixed value 1,
+        // regardless of how many generators populate it.
+        inst.fixedString("EOI", length: 20); inst.u16(1)
 
         var ibag = ByteWriter()
         ibag.u16(0); ibag.u16(0)

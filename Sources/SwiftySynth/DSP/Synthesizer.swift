@@ -134,7 +134,7 @@ public final class Synthesizer {
                     // the new voice is simply dropped instead.
                     continue
                 }
-                voice.start(region: region, channel: channel, data: soundFont.waveData, key: key, velocity: velocity)
+                voice.start(region: region, channel: 0, channelInfo: channel, data: soundFont.waveData, key: key, velocity: velocity)
             }
         }
     }

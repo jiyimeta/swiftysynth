@@ -28,17 +28,13 @@ import Foundation
 /// it for the voice's lifetime — safe because `Channel` never references its
 /// `Voice`s back.
 ///
-/// SPIKE scope narrowing vs `Voice.cs`: this spike's `Synthesizer` has no
-/// reverb/chorus bus (`Chorus.cs`/`Reverb.cs` are out of scope), so the
-/// `instrumentReverb`/`instrumentChorus`/`previousReverbSend`/
-/// `previousChorusSend`/`currentReverbSend`/`currentChorusSend` fields (and
-/// their `Start`/`Process` assignments) are dropped entirely — they have no
-/// consumer in this port. The mix-gain path they sit alongside in `Voice.cs`
-/// (which IS consumed by `Synthesizer.renderBlock`) is unaffected by the
-/// omission. `Kill()` (used only by `Synthesizer.NoteOffAll`'s "immediate"
-/// path, which is out of this spike's public API) and `Priority`
-/// (used only by `VoiceCollection`'s priority-based stealing, itself out of
-/// spike scope — see `Synthesizer.requestVoice`) are also dropped.
+/// Full-port extension over the spike: reverb/chorus send state
+/// (`previousReverbSend`/`currentReverbSend`/`previousChorusSend`/
+/// `currentChorusSend` + the instrument send offsets — updated every block
+/// now, consumed by the effects bus in Phase 2), `kill()` (the immediate
+/// note-off path), `priority` (read by `VoiceCollection`'s steal selection),
+/// the hold-pedal release guard, and the MIDI channel index (`channel`)
+/// alongside the `Channel` state reference (`channelInfo`).
 final class Voice {
     private let volEnv: VolumeEnvelope
     private let modEnv: ModulationEnvelope
@@ -63,15 +59,25 @@ final class Voice {
     private(set) var currentMixGainLeft: Float = 0
     private(set) var currentMixGainRight: Float = 0
 
+    private(set) var previousReverbSend: Float = 0
+    private(set) var previousChorusSend: Float = 0
+    private(set) var currentReverbSend: Float = 0
+    private(set) var currentChorusSend: Float = 0
+
     private(set) var exclusiveClass: Int = 0
     private(set) var key: Int = 0
     private var velocity: Int = 0
 
-    /// The `Channel` a voice was most recently `start`ed against. Implicitly
-    /// unwrapped: never read before `start` has run at least once, mirroring
-    /// the established convention in this port (e.g. `Oscillator`'s `data`)
-    /// that `process`/`end` are never called before `start`.
-    private var channel: Channel!
+    /// The MIDI channel INDEX this voice was started on (C# `Voice.channel`) —
+    /// `VoiceCollection` compares it for exclusive-class reuse and
+    /// `Synthesizer` for per-channel note-off/kill.
+    private(set) var channel: Int = 0
+
+    /// The `Channel` state object read every block (C# reads
+    /// `synthesizer.Channels[channel]` lazily; this port receives the
+    /// reference at `start` — the established no-back-reference adaptation).
+    /// Implicitly unwrapped: never read before `start` has run at least once.
+    private var channelInfo: Channel!
 
     private var noteGain: Float = 0
 
@@ -91,12 +97,15 @@ final class Voice {
 
     private var instrumentPan: Float = 0
 
+    private var instrumentReverb: Float = 0
+    private var instrumentChorus: Float = 0
+
     // Some instruments require fast cutoff change, which can cause pop noise.
     // This is used to smooth out the cutoff frequency.
     private var smoothedCutoff: Float = 0
 
     private var voiceState: VoiceState = .playing
-    private var voiceLength: Int = 0
+    private(set) var voiceLength: Int = 0
 
     private(set) var isActive: Bool = false
 
@@ -119,9 +128,10 @@ final class Voice {
     /// Mirrors `Voice.Start` with `RegionEx.cs`'s `RegionPair`-typed helpers
     /// folded in inline. Copy every constant/order exactly — this is the
     /// equivalence-critical entry point for a voice's entire parameter set.
-    func start(region: RegionPair, channel: Channel, data: [Int16], key: Int, velocity: Int) {
+    func start(region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int) {
         self.exclusiveClass = region.exclusiveClass
         self.channel = channel
+        self.channelInfo = channelInfo
         self.key = key
         self.velocity = velocity
 
@@ -151,9 +161,8 @@ final class Voice {
         dynamicVolume = modLfoToVolume > 0.05
 
         instrumentPan = min(max(region.pan, -50), 50)
-        // SPIKE: instrumentReverb/instrumentChorus (0.01 × region's
-        // reverb/chorus effects-send generators) are dropped — see the class
-        // doc comment (no reverb/chorus bus in this spike's Synthesizer).
+        instrumentReverb = 0.01 * region.reverbEffectsSend
+        instrumentChorus = 0.01 * region.chorusEffectsSend
 
         startVolumeEnvelope(region: region, key: key, velocity: velocity)
         startModulationEnvelope(region: region, key: key, velocity: velocity)
@@ -231,6 +240,14 @@ final class Voice {
         }
     }
 
+    /// Mirrors `Voice.Kill`: silences the voice with no release phase. The
+    /// voice stays in the pool until its next `process()` returns false —
+    /// and, critically for stealing, `priority` reads 0 in the meantime, so
+    /// a killed voice is always the first steal candidate.
+    func kill() {
+        noteGain = 0
+    }
+
     /// Mirrors `Voice.Process`: renders one block into `block` and returns
     /// whether the voice is still alive. Copy the block order of operations
     /// exactly. Sets `isActive = false` on every death path (mirrors this
@@ -253,9 +270,9 @@ final class Voice {
         vibLfo.process()
         modLfo.process()
 
-        let vibPitchChange = (0.01 * channel.modulation + vibLfoToPitch) * vibLfo.value
+        let vibPitchChange = (0.01 * channelInfo.modulation + vibLfoToPitch) * vibLfo.value
         let modPitchChange = modLfoToPitch * modLfo.value + modEnvToPitch * modEnv.value
-        let channelPitchChange = channel.tune + channel.pitchBend
+        let channelPitchChange = channelInfo.tune + channelInfo.pitchBend
         let pitch = Float(key) + vibPitchChange + modPitchChange + channelPitchChange
         if !oscillator.process(&block, pitch) {
             isActive = false
@@ -278,9 +295,11 @@ final class Voice {
 
         previousMixGainLeft = currentMixGainLeft
         previousMixGainRight = currentMixGainRight
+        previousReverbSend = currentReverbSend
+        previousChorusSend = currentChorusSend
 
         // According to the GM spec, the following value should be squared.
-        let ve = channel.volume * channel.expression
+        let ve = channelInfo.volume * channelInfo.expression
         let channelGain = ve * ve
 
         var mixGain = noteGain * channelGain * volEnv.value
@@ -289,7 +308,7 @@ final class Voice {
             mixGain *= SoundFontMath.decibelsToLinear(decibels)
         }
 
-        let angle = (Float.pi / 200) * (channel.pan + instrumentPan + 50)
+        let angle = (Float.pi / 200) * (channelInfo.pan + instrumentPan + 50)
         if angle <= 0 {
             currentMixGainLeft = mixGain
             currentMixGainRight = 0
@@ -301,9 +320,14 @@ final class Voice {
             currentMixGainRight = mixGain * sin(angle)
         }
 
+        currentReverbSend = min(max(channelInfo.reverbSend + instrumentReverb, 0), 1)
+        currentChorusSend = min(max(channelInfo.chorusSend + instrumentChorus, 0), 1)
+
         if voiceLength == 0 {
             previousMixGainLeft = currentMixGainLeft
             previousMixGainRight = currentMixGainRight
+            previousReverbSend = currentReverbSend
+            previousChorusSend = currentChorusSend
         }
 
         voiceLength += synthesizerBlockSize
@@ -311,23 +335,32 @@ final class Voice {
         return true
     }
 
-    /// Mirrors `Voice.ReleaseIfNecessary`.
-    ///
-    /// SPIKE: C#'s guard is `voiceState == ReleaseRequested && !channelInfo.HoldPedal`.
-    /// `Channel` omits the hold-pedal getter in this port (no CC64 dispatch —
-    /// see `Channel.swift`'s doc comment), so the `&& !HoldPedal` half of the
-    /// guard is dropped; this port always behaves as if the hold pedal is up.
+    /// Mirrors `Voice.ReleaseIfNecessary`: a requested release engages only
+    /// after `minimumVoiceDuration` AND while the channel's hold pedal is up.
     private func releaseIfNecessary() {
         if voiceLength < minimumVoiceDuration {
             return
         }
 
-        if voiceState == .releaseRequested {
+        if voiceState == .releaseRequested && !channelInfo.holdPedal {
             volEnv.release()
             modEnv.release()
             oscillator.release()
 
             voiceState = .released
+        }
+    }
+
+    /// Mirrors `Voice.Priority`: 0 for inaudible voices; otherwise the
+    /// volume envelope's stage-based priority (Release: the current release
+    /// gain 0..1 — quietest tails steal first; Decay/Hold/Attack/Delay:
+    /// 1..5 — effectively never stolen while lower-priority candidates
+    /// exist). FAITHFUL — this value is what the G-steal gate pins.
+    var priority: Float {
+        if noteGain < SoundFontMath.nonAudible {
+            return 0
+        } else {
+            return volEnv.priority
         }
     }
 
