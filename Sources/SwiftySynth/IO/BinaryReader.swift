@@ -1,19 +1,24 @@
 import Foundation
 
-/// Errors surfaced while loading a SoundFont.
+/// Errors surfaced while loading a SoundFont or validating synthesis settings.
 ///
-/// A malformed font must never trap the host app: every out-of-bounds read
-/// (the Swift analogue of .NET's `EndOfStreamException`) is reported as
-/// `.unexpectedEndOfData` instead of trapping.
+/// A malformed font (or an out-of-range setting) must never trap the host
+/// app: every out-of-bounds read (the Swift analogue of .NET's
+/// `EndOfStreamException`) is reported as `.unexpectedEndOfData`, structural
+/// violations as `.invalidSoundFont`, and settings-range violations (C#'s
+/// `ArgumentOutOfRangeException`) as `.invalidSettings`.
 public enum SwiftySynthError: Error, CustomStringConvertible {
     case unexpectedEndOfData
     case invalidSoundFont(String)
+    case invalidSettings(String)
 
     public var description: String {
         switch self {
         case .unexpectedEndOfData:
             return "Unexpected end of data."
         case .invalidSoundFont(let message):
+            return message
+        case .invalidSettings(let message):
             return message
         }
     }
