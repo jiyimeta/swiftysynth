@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "swift-meltysynth",
+    name: "swiftysynth",
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
-        .library(name: "MeltySynth", targets: ["MeltySynth"])
+        .library(name: "SwiftySynth", targets: ["SwiftySynth"])
     ],
     targets: [
-        .target(name: "MeltySynth"),
-        .executableTarget(name: "MeltySynthSpike", dependencies: ["MeltySynth"]),
+        .target(name: "SwiftySynth"),
+        .executableTarget(name: "SwiftySynthSpike", dependencies: ["SwiftySynth"]),
         .testTarget(
-            name: "MeltySynthTests",
-            dependencies: ["MeltySynth"],
+            name: "SwiftySynthTests",
+            dependencies: ["SwiftySynth"],
             resources: [.copy("Fixtures")]
         ),
     ]

@@ -1,4 +1,4 @@
-# swift-meltysynth
+# swiftysynth
 
 A pure-Swift SF2 (SoundFont) synthesizer, ported from sinshu's
 [MeltySynth](https://github.com/sinshu/meltysynth) (C#, MIT).
@@ -23,8 +23,8 @@ scope.
 ## Try it
 
 ```sh
-swift run -c release MeltySynthSpike play <path-to.sf2>            # live C4 + timing histogram
-swift run -c release MeltySynthSpike export <path-to.sf2> out.wav  # 5 s float32 WAV
+swift run -c release SwiftySynthSpike play <path-to.sf2>            # live C4 + timing histogram
+swift run -c release SwiftySynthSpike export <path-to.sf2> out.wav  # 5 s float32 WAV
 swift test                                                          # gated suites need the reference SF2
 ```
 
@@ -32,5 +32,5 @@ swift test                                                          # gated suit
 
 A Swift port of [MeltySynth](https://github.com/sinshu/meltysynth) by sinshu (MIT).
 Test vectors are generated from [rustysynth](https://github.com/sinshu/rustysynth)
-via `Tools/oracle` (see `Tests/MeltySynthTests/Fixtures/README.md`). See `NOTICE` and
+via `Tools/oracle` (see `Tests/SwiftySynthTests/Fixtures/README.md`). See `NOTICE` and
 `LICENSE`.
