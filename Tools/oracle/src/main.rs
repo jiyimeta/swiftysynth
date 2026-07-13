@@ -19,10 +19,12 @@ fn main() -> ExitCode {
         Some("dump-font") if args.len() == 4 => dump_font(&args[2], &args[3]),
         Some("render-note") if args.len() == 5 => render_note(&args[2], &args[3], &args[4]),
         Some("probe") if args.len() == 3 => probe(&args[2]),
+        Some("render-multi") if args.len() == 5 => render_multi(&args[2], &args[3], &args[4]),
         _ => {
             eprintln!("usage: oracle dump-font <sf2> <out.json>");
             eprintln!("       oracle render-note <sf2> <out.wav> <out.json>");
             eprintln!("       oracle probe <sf2>");
+            eprintln!("       oracle render-multi <sf2> <out.wav> <out.json>");
             ExitCode::FAILURE
         }
     }
@@ -462,5 +464,142 @@ fn probe(sf2_path: &str) -> ExitCode {
         }))
         .unwrap()
     );
+    ExitCode::SUCCESS
+}
+
+/// The committed multichannel dry message stream (G2-multi). Frames are
+/// absolute sample positions in a 220500-frame (5.0 s @ 44.1 kHz) render; all
+/// are multiples of 2205 — deliberately NOT multiples of the 64-frame block,
+/// so the partial-block carry is exercised identically on both sides.
+///
+/// STREAM CONSTRAINTS (Channel-model divergence, see the plan's Global
+/// Constraints): no NRPN (CC 0x62/0x63) anywhere; every data entry (0x06/0x26)
+/// is preceded by an RPN select (0x65/0x64). Under these constraints
+/// rustysynth's NRPN-guarded dispatch and canonical C#'s unguarded dispatch
+/// are behaviorally identical.
+///
+/// Coverage (spec §7 G2-multi): program change, CC channel volume / pan /
+/// expression (incl. mid-note changes), RPN pitch-bend-range + pitch bend,
+/// and the percussion channel 9.
+const MULTI_MESSAGES: &[(usize, i32, i32, i32, i32)] = &[
+    // (frame, channel, command, data1, data2)
+    (0, 0, 0xC0, 0, 0),          // ch0: program 0 (Grand Piano)
+    (0, 1, 0xC0, 48, 0),         // ch1: program 48 (String Ensemble 1)
+    (0, 2, 0xC0, 24, 0),         // ch2: program 24 (Nylon Guitar)
+    (0, 2, 0xB0, 0x0A, 20),      // ch2: pan left
+    (0, 1, 0xB0, 0x65, 0),       // ch1: RPN coarse = 0
+    (0, 1, 0xB0, 0x64, 0),       // ch1: RPN fine = 0 → RPN 0 (pitch-bend range)
+    (0, 1, 0xB0, 0x06, 4),       // ch1: data entry coarse → bend range 4 semitones
+    (0, 0, 0x90, 60, 100),       // ch0: C-major chord
+    (0, 0, 0x90, 64, 96),
+    (0, 0, 0x90, 67, 92),
+    (4_410, 9, 0x90, 36, 127),   // ch9: kick
+    (8_820, 9, 0x90, 42, 100),   // ch9: closed hi-hat
+    (13_230, 9, 0x90, 38, 110),  // ch9: snare
+    (17_640, 9, 0x90, 42, 100),  // ch9: closed hi-hat
+    (22_050, 1, 0x90, 55, 90),   // ch1: strings G3
+    (26_460, 2, 0x90, 48, 85),   // ch2: guitar C3
+    (44_100, 1, 0xE0, 0, 80),    // ch1: bend +2048/8192 × 4 st = +1 semitone
+    (66_150, 1, 0xE0, 0, 64),    // ch1: bend back to center
+    (88_200, 0, 0xB0, 0x07, 80), // ch0: channel volume down mid-note
+    (99_225, 0, 0xB0, 0x0A, 96), // ch0: pan right mid-note
+    (110_250, 2, 0xB0, 0x0B, 70),// ch2: expression down mid-note
+    (132_300, 0, 0x80, 60, 0),   // ch0: chord off
+    (132_300, 0, 0x80, 64, 0),
+    (132_300, 0, 0x80, 67, 0),
+    (154_350, 1, 0x80, 55, 0),   // ch1: strings off
+    (154_350, 2, 0x80, 48, 0),   // ch2: guitar off
+    (176_400, 9, 0x90, 46, 100), // ch9: open hi-hat (tail into the final second)
+    (198_450, 9, 0x80, 46, 0),   // ch9: open hi-hat off
+];
+
+fn render_multi(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{Synthesizer, SynthesizerSettings};
+
+    let font_bytes = fs::read(sf2_path).expect("cannot read sf2");
+    let font_sha = hex::encode(Sha256::digest(&font_bytes));
+    let mut reader = std::io::Cursor::new(font_bytes);
+    let font = Arc::new(SoundFont::new(&mut reader).expect("cannot parse sf2"));
+
+    // Equivalence-critical settings: block 64, dry, polyphony 64 (the stream
+    // never exceeds ~7 simultaneous voices, so G2-multi does not depend on
+    // steal equivalence — steal behavior is G-steal's job), master 0.5.
+    let mut settings = SynthesizerSettings::new(44_100);
+    settings.block_size = 64;
+    settings.maximum_polyphony = 64;
+    settings.enable_reverb_and_chorus = false;
+    let mut synth = Synthesizer::new(&font, &settings).expect("cannot create synthesizer");
+    synth.set_master_volume(0.5);
+
+    const TOTAL_FRAMES: usize = 220_500; // 5.0 s
+    let mut left = vec![0.0f32; TOTAL_FRAMES];
+    let mut right = vec![0.0f32; TOTAL_FRAMES];
+
+    // Chunked render with chunk boundaries EXACTLY at the message frames —
+    // the Swift G2-multi test replays the sidecar with identical boundaries,
+    // so both sides hit the same internal block phase (spike Task-5 lesson).
+    let mut cursor = 0usize;
+    for &(frame, channel, command, data1, data2) in MULTI_MESSAGES {
+        assert!(
+            frame >= cursor && frame <= TOTAL_FRAMES,
+            "messages must be frame-ordered"
+        );
+        if frame > cursor {
+            synth.render(&mut left[cursor..frame], &mut right[cursor..frame]);
+            cursor = frame;
+        }
+        synth.process_midi_message(channel, command, data1, data2);
+    }
+    if cursor < TOTAL_FRAMES {
+        synth.render(&mut left[cursor..], &mut right[cursor..]);
+    }
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 44_100,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(wav_path, spec).expect("cannot create wav");
+    for i in 0..TOTAL_FRAMES {
+        writer.write_sample(left[i]).unwrap();
+        writer.write_sample(right[i]).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    let messages_json: Vec<Value> = MULTI_MESSAGES
+        .iter()
+        .map(|&(frame, channel, command, data1, data2)| {
+            json!({
+                "frame": frame,
+                "channel": channel,
+                "command": command,
+                "data1": data1,
+                "data2": data2,
+            })
+        })
+        .collect();
+
+    let sidecar = json!({
+        "sampleRate": 44_100,
+        "blockSize": 64,
+        "maximumPolyphony": 64,
+        "enableReverbAndChorus": false,
+        "masterVolume": 0.5,
+        "totalFrames": TOTAL_FRAMES,
+        "rustysynthVersion": RUSTYSYNTH_VERSION,
+        "soundFontSha256": font_sha,
+        "messages": messages_json,
+    });
+    fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap())
+        .expect("cannot write sidecar");
+    println!("wrote {wav_path} (peak {peak}) and {json_path}");
     ExitCode::SUCCESS
 }
