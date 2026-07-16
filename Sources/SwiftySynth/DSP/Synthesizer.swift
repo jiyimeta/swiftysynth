@@ -1,8 +1,9 @@
 import Foundation
 
-/// The full 16-channel SoundFont synthesizer — dry path (the reverb/chorus
-/// bus lands in Phase 2; `enableReverbAndChorus` is stored and validated, but
-/// until P2 rendering is always dry).
+/// The full 16-channel SoundFont synthesizer with the Freeverb reverb +
+/// chorus effects bus (allocated at init iff `enableReverbAndChorus`;
+/// rendering is fully dry — bit-identical to the pre-effects build — when
+/// disabled).
 ///
 /// Ported from `Synthesizer.cs` (MeltySynth, MIT License — see NOTICE). The
 /// STRUCTURE is idiomatic Swift: `SynthesizerSettings` value-type init,
@@ -41,8 +42,9 @@ public final class Synthesizer {
     /// The number of maximum polyphony (the voice-pool size, 8...256).
     public let maximumPolyphony: Int
 
-    /// Whether reverb and chorus are enabled. P1: stored but inert — the
-    /// effects units are ported in Phase 2; rendering is dry until then.
+    /// Whether reverb and chorus are enabled. When true, `init` allocates
+    /// the effects units and their block buffers (`effects != nil`) and
+    /// `renderBlock` mixes the effects return into every block.
     public let enableReverbAndChorus: Bool
 
     /// The master volume. Defaults to 0.5 (`Synthesizer.cs`'s field initializer).
@@ -59,6 +61,10 @@ public final class Synthesizer {
 
     /// The steal-to-play voice pool. Internal (not private) for @testable tests.
     let voices: VoiceCollection
+
+    /// The preallocated effects bus — non-nil iff `enableReverbAndChorus`.
+    /// Internal (not private) for @testable tests.
+    let effects: Effects?
 
     private var blockLeft: [Float]
     private var blockRight: [Float]
@@ -118,6 +124,10 @@ public final class Synthesizer {
         self.blockRead = settings.blockSize
 
         self.masterVolume = 0.5
+
+        self.effects = settings.enableReverbAndChorus
+            ? Effects(sampleRate: settings.sampleRate, blockSize: settings.blockSize)
+            : nil
     }
 
     /// Initializes a new synthesizer using a specified SoundFont and sample
@@ -274,14 +284,19 @@ public final class Synthesizer {
         channels[channel].resetAllControllers()
     }
 
-    /// Resets the synthesizer: clears all voices, resets every channel to its
-    /// MIDI defaults, and restarts the block carry. (P2 adds
-    /// `reverb.mute()` / `chorus.mute()` here.)
+    /// Resets the synthesizer: clears all voices, resets every channel to
+    /// its MIDI defaults, mutes the reverb/chorus tails, and restarts the
+    /// block carry. Mirrors `Synthesizer.Reset`.
     public func reset() {
         voices.clear()
 
         for channel in channels {
             channel.reset()
+        }
+
+        if let effects {
+            effects.reverb.mute()
+            effects.chorus.mute()
         }
 
         blockRead = blockSize
@@ -315,10 +330,11 @@ public final class Synthesizer {
         }
     }
 
-    /// Mirrors `Synthesizer.RenderBlock` (dry half): `voices.process()`
-    /// advances/compacts the pool, then the surviving active prefix is mixed
-    /// in order — the same summation order as C#'s enumerator. The mix-gain
-    /// arithmetic is byte-for-byte the spike's G2-proven code.
+    /// Mirrors `Synthesizer.RenderBlock`: `voices.process()` advances/
+    /// compacts the pool, the surviving active prefix is mixed dry in order
+    /// (the spike's G2-proven byte-for-byte gain arithmetic), then — when
+    /// effects are enabled — the chorus and reverb send/return half runs
+    /// (see the inline comment below).
     private func renderBlock() {
         voices.process()
 
@@ -338,10 +354,50 @@ public final class Synthesizer {
             writeBlock(previousGain: previousGainRight, currentGain: currentGainRight, source: voice.block, destination: &blockRight)
         }
 
-        // P2 adds here, gated on `enableReverbAndChorus`: the chorus send
-        // build + process + multiplyAdd, then the reverb send (inputGain ×
-        // reverbSend × (mixGainLeft + mixGainRight)) + process + multiplyAdd
-        // (Synthesizer.cs RenderBlock's second half).
+        // Effects half, faithful to `Synthesizer.cs` RenderBlock: build the
+        // STEREO chorus send (chorusSend × mixGain per side), process, and
+        // return at masterVolume; then the MONO reverb send
+        // (inputGain × reverbSend × (mixGainLeft + mixGainRight)), process,
+        // return at masterVolume. All buffers preallocated in `Effects`;
+        // this path allocates nothing (spec §8).
+        if let effects {
+            for i in 0..<effects.chorusInputLeft.count {
+                effects.chorusInputLeft[i] = 0
+                effects.chorusInputRight[i] = 0
+            }
+            for i in 0..<voices.activeVoiceCount {
+                let voice = voices[i]
+
+                let previousGainLeft = voice.previousChorusSend * voice.previousMixGainLeft
+                let currentGainLeft = voice.currentChorusSend * voice.currentMixGainLeft
+                writeBlock(previousGain: previousGainLeft, currentGain: currentGainLeft, source: voice.block, destination: &effects.chorusInputLeft)
+
+                let previousGainRight = voice.previousChorusSend * voice.previousMixGainRight
+                let currentGainRight = voice.currentChorusSend * voice.currentMixGainRight
+                writeBlock(previousGain: previousGainRight, currentGain: currentGainRight, source: voice.block, destination: &effects.chorusInputRight)
+            }
+            effects.chorus.process(
+                inputLeft: effects.chorusInputLeft, inputRight: effects.chorusInputRight,
+                outputLeft: &effects.chorusOutputLeft, outputRight: &effects.chorusOutputRight)
+            ArrayMath.multiplyAdd(masterVolume, effects.chorusOutputLeft, &blockLeft)
+            ArrayMath.multiplyAdd(masterVolume, effects.chorusOutputRight, &blockRight)
+
+            for i in 0..<effects.reverbInput.count {
+                effects.reverbInput[i] = 0
+            }
+            for i in 0..<voices.activeVoiceCount {
+                let voice = voices[i]
+
+                let previousGain = effects.reverb.inputGain * voice.previousReverbSend * (voice.previousMixGainLeft + voice.previousMixGainRight)
+                let currentGain = effects.reverb.inputGain * voice.currentReverbSend * (voice.currentMixGainLeft + voice.currentMixGainRight)
+                writeBlock(previousGain: previousGain, currentGain: currentGain, source: voice.block, destination: &effects.reverbInput)
+            }
+            effects.reverb.process(
+                input: effects.reverbInput,
+                outputLeft: &effects.reverbOutputLeft, outputRight: &effects.reverbOutputRight)
+            ArrayMath.multiplyAdd(masterVolume, effects.reverbOutputLeft, &blockLeft)
+            ArrayMath.multiplyAdd(masterVolume, effects.reverbOutputRight, &blockRight)
+        }
     }
 
     /// Mirrors `Synthesizer.WriteBlock`, with `ArrayMath.cs`'s two
@@ -366,6 +422,40 @@ public final class Synthesizer {
                 destination[t] += gain * source[t]
                 gain += step
             }
+        }
+    }
+
+    /// The preallocated effects bus (rustysynth's `Effects` struct
+    /// analogue; C# holds the same nine members as nullable fields on
+    /// `Synthesizer`). Exists iff `enableReverbAndChorus`. Every buffer is
+    /// allocated HERE, at synthesizer init, and only mutated in place by
+    /// `renderBlock` — the render path allocates nothing (spec §8).
+    final class Effects {
+        let reverb: Reverb
+        let chorus: Chorus
+
+        var reverbInput: [Float]
+        var reverbOutputLeft: [Float]
+        var reverbOutputRight: [Float]
+
+        var chorusInputLeft: [Float]
+        var chorusInputRight: [Float]
+        var chorusOutputLeft: [Float]
+        var chorusOutputRight: [Float]
+
+        init(sampleRate: Int, blockSize: Int) {
+            reverb = Reverb(sampleRate: sampleRate)
+            reverbInput = [Float](repeating: 0, count: blockSize)
+            reverbOutputLeft = [Float](repeating: 0, count: blockSize)
+            reverbOutputRight = [Float](repeating: 0, count: blockSize)
+
+            // The canonical chorus parameters (`Synthesizer.cs` ctor):
+            // delay 0.002 s, depth 0.0019 s, LFO frequency 0.4 Hz.
+            chorus = Chorus(sampleRate: sampleRate, delay: 0.002, depth: 0.0019, frequency: 0.4)
+            chorusInputLeft = [Float](repeating: 0, count: blockSize)
+            chorusInputRight = [Float](repeating: 0, count: blockSize)
+            chorusOutputLeft = [Float](repeating: 0, count: blockSize)
+            chorusOutputRight = [Float](repeating: 0, count: blockSize)
         }
     }
 }

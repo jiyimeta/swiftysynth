@@ -6,7 +6,12 @@ import Testing
 struct SynthesizerSmokeTests {
     @Test func singleNoteLifecycle() throws {
         let font = try SoundFont(url: FixtureSF2.url)
-        let synth = try Synthesizer(soundFont: font, sampleRate: 44_100)
+        // P2: default settings now enable the effects bus; this smoke pins
+        // the DRY note lifecycle (wet routing/e2e are SynthesizerEffectsTests
+        // and EffectsEquivalenceTests' job), so the flag is explicit.
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, enableReverbAndChorus: false)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
         #expect(synth.blockSize == 64)
         #expect(synth.masterVolume == 0.5)
         #expect(synth.activeVoiceCount == 0)

@@ -23,10 +23,11 @@ public struct SynthesizerSettings: Sendable {
     /// The number of maximum polyphony (8...256, default 64).
     public let maximumPolyphony: Int
 
-    /// Whether reverb and chorus are enabled (default true).
-    ///
-    /// P1 NOTE: the effects units land in Phase 2 — until then `Synthesizer`
-    /// stores this flag but always renders dry.
+    /// Whether reverb and chorus are enabled (default true). When enabled,
+    /// `Synthesizer` allocates the Freeverb/chorus units and their block
+    /// buffers at init and mixes the effects return into every rendered
+    /// block; when disabled, rendering is fully dry and no effects state
+    /// exists.
     public let enableReverbAndChorus: Bool
 
     public init(
