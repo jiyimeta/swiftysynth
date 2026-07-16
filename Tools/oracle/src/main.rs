@@ -20,11 +20,13 @@ fn main() -> ExitCode {
         Some("render-note") if args.len() == 5 => render_note(&args[2], &args[3], &args[4]),
         Some("probe") if args.len() == 3 => probe(&args[2]),
         Some("render-multi") if args.len() == 5 => render_multi(&args[2], &args[3], &args[4]),
+        Some("render-fx") if args.len() == 5 => render_fx(&args[2], &args[3], &args[4]),
         _ => {
             eprintln!("usage: oracle dump-font <sf2> <out.json>");
             eprintln!("       oracle render-note <sf2> <out.wav> <out.json>");
             eprintln!("       oracle probe <sf2>");
             eprintln!("       oracle render-multi <sf2> <out.wav> <out.json>");
+            eprintln!("       oracle render-fx <sf2> <out.wav> <out.json>");
             ExitCode::FAILURE
         }
     }
@@ -592,6 +594,145 @@ fn render_multi(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
         "blockSize": 64,
         "maximumPolyphony": 64,
         "enableReverbAndChorus": false,
+        "masterVolume": 0.5,
+        "totalFrames": TOTAL_FRAMES,
+        "rustysynthVersion": RUSTYSYNTH_VERSION,
+        "soundFontSha256": font_sha,
+        "messages": messages_json,
+    });
+    fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap())
+        .expect("cannot write sidecar");
+    println!("wrote {wav_path} (peak {peak}) and {json_path}");
+    ExitCode::SUCCESS
+}
+
+/// The committed effects-on message stream (G2-fx e2e). Same conventions as
+/// MULTI_MESSAGES — frames are absolute positions in a 220500-frame (5.0 s
+/// @ 44.1 kHz) render, all multiples of 2205 (never multiples of the
+/// 64-frame block), frame-ordered, chunk boundaries at the message frames.
+/// Deliberately a SEPARATE stream: MULTI_MESSAGES must stay byte-stable so
+/// the committed dry vector remains valid.
+///
+/// Effects-focused coverage (spec §7 G2-fx):
+///   - reverb: the channel-default send (40/127) on every melodic channel,
+///     an explicit high send (ch1), a mid-note send drop (exercises the
+///     send-gain ramp), and percussion (ch9) through the reverb bus with a
+///     crash tail;
+///   - chorus: OFF by channel default — explicitly enabled on ch0 from
+///     frame 0 (CC 0x5D), raised mid-note, switched on mid-note on ch2;
+///   - the final ~2 s are release + effects tail only: the feedback-drift
+///     accumulation region the empirical G2-fx tolerance is calibrated on.
+///
+/// STREAM CONSTRAINTS (Channel-model divergence, see the P1 plan's Global
+/// Constraints): no NRPN (CC 0x62/0x63) and no data entry at all, so the
+/// rustysynth-vs-canonical data-entry gate difference cannot engage.
+const FX_MESSAGES: &[(usize, i32, i32, i32, i32)] = &[
+    // (frame, channel, command, data1, data2)
+    (0, 0, 0xC0, 0, 0),            // ch0: program 0 (Grand Piano)
+    (0, 1, 0xC0, 48, 0),           // ch1: program 48 (String Ensemble 1)
+    (0, 2, 0xC0, 24, 0),           // ch2: program 24 (Nylon Guitar)
+    (0, 0, 0xB0, 0x5D, 64),        // ch0: chorus send 64 — chorus bus live from block 0
+    (0, 1, 0xB0, 0x5B, 100),       // ch1: reverb send 100 (above the 40 default)
+    (0, 2, 0xB0, 0x0A, 30),        // ch2: pan left — panned dry vs summed mono reverb send
+    (0, 0, 0x90, 60, 100),         // ch0: C-major chord (piano through the chorus)
+    (0, 0, 0x90, 64, 96),
+    (0, 0, 0x90, 67, 92),
+    (4_410, 9, 0x90, 36, 127),     // ch9: kick (percussion through the reverb bus)
+    (8_820, 9, 0x90, 38, 110),     // ch9: snare
+    (13_230, 9, 0x90, 42, 100),    // ch9: closed hi-hat
+    (22_050, 1, 0x90, 55, 90),     // ch1: strings G3 (heavy reverb)
+    (26_460, 2, 0x90, 48, 85),     // ch2: guitar C3
+    (44_100, 0, 0xB0, 0x5D, 127),  // ch0: chorus send max, mid-note (send ramp)
+    (66_150, 1, 0xB0, 0x5B, 20),   // ch1: reverb send down, mid-note (send ramp)
+    (88_200, 2, 0xB0, 0x5D, 96),   // ch2: chorus appears mid-note
+    (110_250, 0, 0x80, 60, 0),     // ch0: chord off — chorus + reverb tails
+    (110_250, 0, 0x80, 64, 0),
+    (110_250, 0, 0x80, 67, 0),
+    (132_300, 1, 0x80, 55, 0),     // ch1: strings off — long reverb tail
+    (132_300, 2, 0x80, 48, 0),     // ch2: guitar off
+    (154_350, 9, 0x90, 49, 110),   // ch9: crash cymbal — bright tail into the reverb
+    (176_400, 9, 0x80, 49, 0),     // final 2 s: pure tail (drift-calibration region)
+];
+
+fn render_fx(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{Synthesizer, SynthesizerSettings};
+
+    let font_bytes = fs::read(sf2_path).expect("cannot read sf2");
+    let font_sha = hex::encode(Sha256::digest(&font_bytes));
+    let mut reader = std::io::Cursor::new(font_bytes);
+    let font = Arc::new(SoundFont::new(&mut reader).expect("cannot parse sf2"));
+
+    // Equivalence-critical settings: block 64, EFFECTS ON, polyphony 64
+    // (the stream stays far below the pool — steal equivalence is G-steal's
+    // job, not this vector's), master 0.5.
+    let mut settings = SynthesizerSettings::new(44_100);
+    settings.block_size = 64;
+    settings.maximum_polyphony = 64;
+    settings.enable_reverb_and_chorus = true;
+    let mut synth = Synthesizer::new(&font, &settings).expect("cannot create synthesizer");
+    synth.set_master_volume(0.5);
+
+    const TOTAL_FRAMES: usize = 220_500; // 5.0 s
+    let mut left = vec![0.0f32; TOTAL_FRAMES];
+    let mut right = vec![0.0f32; TOTAL_FRAMES];
+
+    // Chunked render with chunk boundaries EXACTLY at the message frames —
+    // the Swift G2-fx test replays the sidecar with identical boundaries,
+    // so both sides hit the same internal block phase.
+    let mut cursor = 0usize;
+    for &(frame, channel, command, data1, data2) in FX_MESSAGES {
+        assert!(
+            frame >= cursor && frame <= TOTAL_FRAMES,
+            "messages must be frame-ordered"
+        );
+        if frame > cursor {
+            synth.render(&mut left[cursor..frame], &mut right[cursor..frame]);
+            cursor = frame;
+        }
+        synth.process_midi_message(channel, command, data1, data2);
+    }
+    if cursor < TOTAL_FRAMES {
+        synth.render(&mut left[cursor..], &mut right[cursor..]);
+    }
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 44_100,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(wav_path, spec).expect("cannot create wav");
+    for i in 0..TOTAL_FRAMES {
+        writer.write_sample(left[i]).unwrap();
+        writer.write_sample(right[i]).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    let messages_json: Vec<Value> = FX_MESSAGES
+        .iter()
+        .map(|&(frame, channel, command, data1, data2)| {
+            json!({
+                "frame": frame,
+                "channel": channel,
+                "command": command,
+                "data1": data1,
+                "data2": data2,
+            })
+        })
+        .collect();
+
+    let sidecar = json!({
+        "sampleRate": 44_100,
+        "blockSize": 64,
+        "maximumPolyphony": 64,
+        "enableReverbAndChorus": true,
         "masterVolume": 0.5,
         "totalFrames": TOTAL_FRAMES,
         "rustysynthVersion": RUSTYSYNTH_VERSION,
