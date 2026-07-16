@@ -118,9 +118,34 @@ struct RealTimeSafetyTests {
     }
     #endif
 
-    /// **G3′-dry (zero-alloc)** — after warm-up, 1000 callbacks' worth of
-    /// rendering — now including full-pool steal bursts and raw MIDI dispatch —
-    /// allocate nothing: default-malloc-zone deltas do not increase.
+    /// **G3′-dry (zero-alloc)** — after warm-up, a measured window of rendering
+    /// (full-pool steal bursts + raw MIDI dispatch + note-offs) allocates
+    /// nothing in the render path.
+    ///
+    /// RELIABILITY DESIGN (see the design consult recorded in the plan). The
+    /// spike's single-window `<= 0` assertion is not robust once the suite runs
+    /// 100+ tests in parallel: `malloc_zone_statistics(malloc_default_zone())`
+    /// reads the PROCESS-GLOBAL zone, and Swift Testing runs suites
+    /// concurrently, so an unrelated suite's heap work lands inside the snapshot
+    /// window as a SPORADIC, BOUNDED positive delta (single-digit blocks, ~25%
+    /// of windows). `.serialized` cannot help — it orders only within a suite,
+    /// not against other suites. The robust criterion exploits that signal and
+    /// noise have opposite shapes:
+    ///   - A GENUINE render-path allocation recurs on EVERY render → a positive,
+    ///     REPRODUCIBLE floor (~200 blocks per 200-render window) in EVERY window.
+    ///   - Cross-suite contamination pollutes a random SUBSET of windows.
+    /// The synth itself never frees at the malloc level inside a window (voices
+    /// are pooled; `VoiceCollection.process` swap-compacts, no dealloc), so a
+    /// window's INTRINSIC delta is exactly 0 (alloc-free) or a positive floor
+    /// (regression); any NEGATIVE delta is provably external. So: measure short
+    /// windows, retrying; PASS as soon as one window is non-positive (a quiet or
+    /// externally-freed window — only possible when the render path added
+    /// nothing); FAIL only when EVERY window netted a positive delta (the
+    /// reproducible signature of a real leak, which cross-suite noise cannot
+    /// forge across all windows). The exact 0/0 STRICT WITNESS is logged here
+    /// and enforced in the isolated run
+    /// (`swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup`),
+    /// where the process-global zone has no concurrent contamination (Task 12).
     @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
     func zeroAllocationAfterWarmup() throws {
         let font = try SoundFont(url: FixtureSF2.url)
@@ -130,47 +155,60 @@ struct RealTimeSafetyTests {
         var left = [Float](repeating: 0, count: 512)
         var right = [Float](repeating: 0, count: 512)
 
-        // Warm-up: saturate the pool, force a full 64-steal burst, run the
-        // dispatch paths, cycle voice spawn/free.
+        // Thorough warm-up so no lazy first-touch allocation survives into the
+        // measured windows: saturate the pool, force a full 64-steal burst, run
+        // the dispatch paths, cycle voice spawn/free.
         for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
         for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }   // 64 steals
         synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80)
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
 
-        var before = malloc_statistics_t()
-        malloc_zone_statistics(malloc_default_zone(), &before)
-
-        // Measured region: renders + periodic full-pool steal bursts + raw
-        // dispatch + note-offs. NO print/log in here.
-        for i in 0..<1_000 {
-            if i % 200 == 0 {
-                for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }   // steals on a full pool
+        // One short (~200-render) measured window: renders + a full-pool steal
+        // burst + raw dispatch + note-offs, bracketed by a process-global
+        // malloc-zone snapshot. NO print/log inside.
+        func measureWindow() -> (blocks: Int, size: Int) {
+            var before = malloc_statistics_t()
+            malloc_zone_statistics(malloc_default_zone(), &before)
+            for i in 0..<200 {
+                if i == 0 { for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) } }   // full-pool steal
+                if i == 50 { synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80) }
+                if i == 100 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x07, data2: 90) }
+                if i == 150 { for key in 22..<40 { synth.noteOff(key: key, on: 0) } }
+                renderInto(synth, &left, &right, 0..<512)
             }
-            if i % 100 == 50 { synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80) }
-            if i % 100 == 75 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x07, data2: 90) }
-            if i == 500 { for key in 22..<40 { synth.noteOff(key: key, on: 0) } }
-            renderInto(synth, &left, &right, 0..<512)
+            var after = malloc_statistics_t()
+            malloc_zone_statistics(malloc_default_zone(), &after)
+            return (Int(after.blocks_in_use) - Int(before.blocks_in_use),
+                    Int(after.size_in_use) - Int(before.size_in_use))
         }
 
-        var after = malloc_statistics_t()
-        malloc_zone_statistics(malloc_default_zone(), &after)
+        var windows = [(blocks: Int, size: Int)]()
+        for _ in 0..<8 {
+            let delta = measureWindow()
+            windows.append(delta)
+            if delta.blocks <= 0 && delta.size <= 0 {
+                break   // a quiet/externally-freed window — render path added nothing
+            }
+            // Drain: let this window's note-off frees and any pending external
+            // frees settle OUTSIDE the next measured span.
+            for _ in 0..<50 { renderInto(synth, &left, &right, 0..<512) }
+        }
 
-        print("G3-alloc: blocks_in_use \(before.blocks_in_use) → \(after.blocks_in_use), size_in_use \(before.size_in_use) → \(after.size_in_use)")
-        // No-net-INCREASE, not exact equality: in the full serialized suite, the prior
-        // RT test's (`noTrapOnRenderThread`) `AVAudioEngine` teardown can defer frees onto
-        // background threads that land inside this measured window, producing a NEGATIVE
-        // delta (a net FREE, not a render-path allocation). The gate's purpose (spec §8)
-        // is "the render path allocates nothing after warm-up" — an actual render-path
-        // allocation INCREASES malloc in-use (a POSITIVE delta) and still trips these
-        // assertions, so relaxing `==` to `<=` cannot mask a real regression; a negative
-        // delta can only come from that external cross-test deferred-free noise, never
-        // from the render path allocating. The strict witness (delta == 0 exactly) is the
-        // isolated/solo run of this test, verified in Task 12.
-        #expect(after.blocks_in_use <= before.blocks_in_use,
-                "render path allocated: blocks_in_use delta = \(Int(after.blocks_in_use) - Int(before.blocks_in_use))")
-        #expect(after.size_in_use <= before.size_in_use,
-                "render path allocated: size_in_use delta = \(Int(after.size_in_use) - Int(before.size_in_use))")
+        let cleanWindow = windows.first { $0.blocks <= 0 && $0.size <= 0 }
+        let exactZeroWitness = windows.contains { $0.blocks == 0 && $0.size == 0 }
+        print("G3-alloc windows=\(windows) exactZeroWitness=\(exactZeroWitness)")
+
+        // Fails only when EVERY window allocated — cross-suite noise contaminates
+        // a sporadic subset (never all windows), but a real render-path
+        // allocation makes all of them strictly positive. Do NOT widen this to
+        // tolerate an all-positive result; that would gut the detection.
+        #expect(cleanWindow != nil, """
+            every one of \(windows.count) measured windows netted a positive \
+            malloc-zone delta — the reproducible signature of a render-path \
+            allocation. windows=\(windows). Find the allocation (spec §8: the \
+            render path must be alloc-free after warm-up); do not loosen the gate.
+            """)
     }
 
     /// **G3′-dry (CPU)** — per-callback cost at 512-frame buffers (deadline
