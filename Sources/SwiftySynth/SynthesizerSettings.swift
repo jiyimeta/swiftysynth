@@ -1,5 +1,3 @@
-import Foundation
-
 /// A validated, immutable set of synthesis parameters.
 ///
 /// The idiomatic-Swift analogue of `SynthesizerSettings.cs` (MeltySynth, MIT

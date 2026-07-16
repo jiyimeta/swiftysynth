@@ -213,6 +213,20 @@ struct RealTimeSafetyTests {
             allocation. windows=\(windows). Find the allocation (spec §8: the \
             render path must be alloc-free after warm-up); do not loosen the gate.
             """)
+
+        // The default `swift test` run (parallel, multi-suite) uses the
+        // noise-robust bounded-retry assertion above, since cross-suite malloc
+        // activity can sporadically pollute a subset of windows. The
+        // authoritative exact-0/0 proof is gated behind an env var so it only
+        // runs isolated (no cross-suite contamination to explain away):
+        //   SWIFTYSYNTH_RT_STRICT=1 swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup
+        if ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil {
+            #expect(exactZeroWitness, """
+                STRICT mode: expected at least one measured window with an exact \
+                0/0 malloc-zone delta (the authoritative zero-alloc proof), but \
+                none of \(windows.count) windows were exactly zero. windows=\(windows).
+                """)
+        }
     }
 
     /// **G3′-dry (CPU)** — per-callback cost at 512-frame buffers (deadline

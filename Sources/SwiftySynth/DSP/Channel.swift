@@ -86,7 +86,10 @@ final class Channel {
         bankNumberValue = value
 
         if isPercussionChannel {
-            bankNumberValue += 128
+            // C#'s `bankNumber += 128` runs as unchecked `int` arithmetic —
+            // wrap instead of trapping on an adversarial (out-of-MIDI-range)
+            // `value` near `Int.max`.
+            bankNumberValue = bankNumberValue &+ 128
         }
     }
 
@@ -161,7 +164,10 @@ final class Channel {
         case 1:
             fineTuneValue = Int16(truncatingIfNeeded: (Int(fineTuneValue) & 0x7F) | (value << 7))
         case 2:
-            coarseTuneValue = Int16(truncatingIfNeeded: value - 64)
+            // `value - 64` runs as unchecked `int` in C#; use wrapping
+            // subtraction so an adversarial `value` near `Int.min` wraps
+            // instead of trapping before the truncating downcast.
+            coarseTuneValue = Int16(truncatingIfNeeded: value &- 64)
         default:
             break
         }
@@ -181,8 +187,11 @@ final class Channel {
 
     /// Mirrors `Channel.SetPitchBend`: 14-bit value, 8192-centered,
     /// normalized to [-1, +1) — the `pitchBend` getter scales by the range.
+    /// The final `- 8192` runs as unchecked `int` in C#; use wrapping
+    /// subtraction so adversarial `value1`/`value2` near the `Int` extremes
+    /// wrap instead of trapping.
     func setPitchBend(_ value1: Int, _ value2: Int) {
-        pitchBendValue = (Float(1) / Float(8192)) * Float((value1 | (value2 << 7)) - 8192)
+        pitchBendValue = (Float(1) / Float(8192)) * Float((value1 | (value2 << 7)) &- 8192)
     }
 
     var bankNumber: Int { bankNumberValue }
@@ -201,7 +210,12 @@ final class Channel {
         Float(pitchBendRangeValue >> 7) + 0.01 * Float(pitchBendRangeValue & 0x7F)
     }
     var tune: Float {
-        Float(coarseTuneValue) + (Float(1) / Float(8192)) * Float(fineTuneValue - 8192)
+        // C#'s `fineTune - 8192` promotes the `short` field to `int` before
+        // subtracting (C#'s implicit short→int promotion for arithmetic
+        // operators), so it never overflows; widen to `Int` here so the
+        // same subtraction can't trap in Swift for an adversarial
+        // `fineTuneValue` near `Int16.min`.
+        Float(coarseTuneValue) + (Float(1) / Float(8192)) * Float(Int(fineTuneValue) - 8192)
     }
 
     var pitchBend: Float { pitchBendRange * pitchBendValue }

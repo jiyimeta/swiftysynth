@@ -28,6 +28,10 @@ final class VoiceCollection {
     /// every `Voice` — including its per-voice render block — is allocated
     /// here, at init (RT requirement, spec §8).
     init(sampleRate: Int, blockSize: Int, maximumPolyphony: Int) {
+        // `requestNew`'s steal path seeds its candidate from `voices[0]`, which assumes a
+        // non-empty pool; `SynthesizerSettings` already guarantees `maximumPolyphony >= 8`,
+        // so this is defense-in-depth for any other caller constructing this type directly.
+        precondition(maximumPolyphony >= 1, "maximumPolyphony must be >= 1")
         var voices: [Voice] = []
         voices.reserveCapacity(maximumPolyphony)
         for _ in 0..<maximumPolyphony {
