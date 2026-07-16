@@ -126,6 +126,62 @@ public final class Synthesizer {
         try self.init(soundFont: soundFont, settings: SynthesizerSettings(sampleRate: sampleRate))
     }
 
+    /// Processes a raw MIDI message — the FAITHFUL dispatch path
+    /// (`Synthesizer.cs ProcessMidiMessage`, byte-value for byte-value); the
+    /// idiomatic `MidiMessage` enum wrapper is layered on top in Phase 4.
+    ///
+    /// Deliberately unhandled, matching canonical C#: NRPN (CC 0x62/0x63) —
+    /// rustysynth diverges here (it gates data entry on an RPN/NRPN flag), so
+    /// committed oracle streams avoid NRPN and precede data entry with an RPN
+    /// select. Unknown commands and unlisted CCs are ignored.
+    public func processMidiMessage(channel: Int, command: Int, data1: Int, data2: Int) {
+        guard 0 <= channel && channel < channels.count else {
+            return
+        }
+        let channelInfo = channels[channel]
+
+        switch command {
+        case 0x80: // Note Off
+            noteOff(key: data1, on: channel)
+
+        case 0x90: // Note On
+            noteOn(key: data1, velocity: data2, on: channel)
+
+        case 0xB0: // Controller
+            switch data1 {
+            case 0x00: channelInfo.setBank(data2)               // Bank Selection
+            case 0x01: channelInfo.setModulationCoarse(data2)   // Modulation Coarse
+            case 0x21: channelInfo.setModulationFine(data2)     // Modulation Fine
+            case 0x06: channelInfo.dataEntryCoarse(data2)       // Data Entry Coarse
+            case 0x26: channelInfo.dataEntryFine(data2)         // Data Entry Fine
+            case 0x07: channelInfo.setVolumeCoarse(data2)       // Channel Volume Coarse
+            case 0x27: channelInfo.setVolumeFine(data2)         // Channel Volume Fine
+            case 0x0A: channelInfo.setPanCoarse(data2)          // Pan Coarse
+            case 0x2A: channelInfo.setPanFine(data2)            // Pan Fine
+            case 0x0B: channelInfo.setExpressionCoarse(data2)   // Expression Coarse
+            case 0x2B: channelInfo.setExpressionFine(data2)     // Expression Fine
+            case 0x40: channelInfo.setHoldPedal(data2)          // Hold Pedal
+            case 0x5B: channelInfo.setReverbSend(data2)         // Reverb Send
+            case 0x5D: channelInfo.setChorusSend(data2)         // Chorus Send
+            case 0x65: channelInfo.setRpnCoarse(data2)          // RPN Coarse
+            case 0x64: channelInfo.setRpnFine(data2)            // RPN Fine
+            case 0x78: noteOffAll(channel: channel, immediate: true)    // All Sound Off
+            case 0x79: resetAllControllers(channel: channel)            // Reset All Controllers
+            case 0x7B: noteOffAll(channel: channel, immediate: false)   // All Note Off
+            default: break
+            }
+
+        case 0xC0: // Program Change
+            channelInfo.setPatch(data1)
+
+        case 0xE0: // Pitch Bend
+            channelInfo.setPitchBend(data1, data2)
+
+        default:
+            break
+        }
+    }
+
     /// Starts a note. Mirrors `Synthesizer.NoteOn`: velocity 0 is a note-off;
     /// the channel's (bank, patch) resolves through the lookup, then the GM
     /// fallback (patch under bank 0, or the standard percussion set 128:0 for
