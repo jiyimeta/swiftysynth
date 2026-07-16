@@ -45,17 +45,21 @@ struct PCMEquivalenceTests {
             "local SF2 differs from the font the oracle vectors were generated from — regenerate the fixtures")
 
         let font = try SoundFont(data: fontData)
-        let synth = try Synthesizer(
-            soundFont: font, sampleRate: sidecar.sampleRate, maximumPolyphony: sidecar.maximumPolyphony)
+        let settings = try SynthesizerSettings(
+            sampleRate: sidecar.sampleRate,
+            blockSize: sidecar.blockSize,
+            maximumPolyphony: sidecar.maximumPolyphony,
+            enableReverbAndChorus: sidecar.enableReverbAndChorus)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
         synth.masterVolume = Float(sidecar.masterVolume)
 
         var left = [Float](repeating: 0, count: sidecar.totalFrames)
         var right = [Float](repeating: 0, count: sidecar.totalFrames)
 
         // Two-chunk render, frame-aligned by construction — identical to the oracle's.
-        synth.noteOn(key: sidecar.key, velocity: sidecar.velocity)
+        synth.noteOn(key: sidecar.key, velocity: sidecar.velocity, on: 0)
         renderInto(synth, &left, &right, 0..<sidecar.noteOffFrame)
-        synth.noteOff(key: sidecar.key)
+        synth.noteOff(key: sidecar.key, on: 0)
         renderInto(synth, &left, &right, sidecar.noteOffFrame..<sidecar.totalFrames)
 
         let wavURL = try #require(Fixtures.url("note-c4-vel100", "wav"))

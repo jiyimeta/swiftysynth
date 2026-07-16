@@ -107,8 +107,6 @@ final class Voice {
     private var voiceState: VoiceState = .playing
     private(set) var voiceLength: Int = 0
 
-    private(set) var isActive: Bool = false
-
     init(sampleRate: Int, blockSize: Int) {
         self.synthesizerBlockSize = blockSize
         self.minimumVoiceDuration = sampleRate / 500
@@ -176,7 +174,6 @@ final class Voice {
 
         voiceState = .playing
         voiceLength = 0
-        isActive = true
     }
 
     /// Mirrors `RegionEx.Start(this VolumeEnvelope, RegionPair, int, int)`.
@@ -250,19 +247,16 @@ final class Voice {
 
     /// Mirrors `Voice.Process`: renders one block into `block` and returns
     /// whether the voice is still alive. Copy the block order of operations
-    /// exactly. Sets `isActive = false` on every death path (mirrors this
-    /// port's fixed-pool `Synthesizer` reading `isActive` afterward instead
-    /// of separately tracking C#'s `VoiceCollection` swap-compaction).
+    /// exactly. Returning false is the death signal — `VoiceCollection.process()`
+    /// swap-compacts the voice out, exactly as C# does.
     func process() -> Bool {
         if noteGain < SoundFontMath.nonAudible {
-            isActive = false
             return false
         }
 
         releaseIfNecessary()
 
         if !volEnv.process() {
-            isActive = false
             return false
         }
 
@@ -275,7 +269,6 @@ final class Voice {
         let channelPitchChange = channelInfo.tune + channelInfo.pitchBend
         let pitch = Float(key) + vibPitchChange + modPitchChange + channelPitchChange
         if !oscillator.process(&block, pitch) {
-            isActive = false
             return false
         }
 

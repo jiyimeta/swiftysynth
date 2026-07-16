@@ -1,50 +1,64 @@
 import Foundation
 
-/// The minimal spike synthesizer: owns a fixed voice pool and one `Channel`,
-/// and renders block-64 stereo audio via a simple two-gain-ramp mix loop.
+/// The full 16-channel SoundFont synthesizer — dry path (the reverb/chorus
+/// bus lands in Phase 2; `enableReverbAndChorus` is stored and validated, but
+/// until P2 rendering is always dry).
 ///
-/// Ported from `Synthesizer.cs` (MeltySynth, MIT License — see NOTICE), with
-/// `SynthesizerSettings.cs`'s constants folded in as fixed values/init
-/// defaults (`blockSize = 64`, `masterVolume = 0.5` initial —
-/// `SynthesizerSettings.DefaultBlockSize`/`Synthesizer`'s `masterVolume`
-/// field initializer), `ArrayMath.cs`'s `MultiplyAdd` overloads folded into
-/// `writeBlock` below, and `VoiceCollection.cs` simplified to a fixed pool
-/// (see `requestVoice`'s doc comment for exactly what's kept vs dropped).
+/// Ported from `Synthesizer.cs` (MeltySynth, MIT License — see NOTICE). The
+/// STRUCTURE is idiomatic Swift: `SynthesizerSettings` value-type init,
+/// dictionary preset lookup, `VoiceCollection` ownership, thrown
+/// `SwiftySynthError` instead of exceptions/asserts. The NUMERIC path —
+/// `renderBlock`'s mix loop, `writeBlock`'s gain ramp (ArrayMath.cs folded
+/// in), and the partial-block carry in `render` — is the spike's G2-proven
+/// faithful code, unchanged.
 ///
-/// SPIKE scope narrowing vs `Synthesizer.cs`:
-/// - Single hardwired channel 0, with its preset resolved once at `init` to
-///   the SoundFont's bank-0/patch-0 preset (`init` throws
-///   `SwiftySynthError.invalidSoundFont` if none exists) — no 16-channel
-///   array, no MIDI CC/RPN dispatch (`ProcessMidiMessage`), no percussion
-///   channel, no program-change bank/patch lookup or GM-fallback chain.
-/// - No reverb/chorus bus (`Chorus.cs`/`Reverb.cs`/
-///   `SynthesizerSettings.EnableReverbAndChorus` are out of scope).
-/// - No sequencer / MIDI file playback, no `Reset`/`NoteOffAll`.
+/// ALLOCATION DISCIPLINE (spec §8): everything — the voice pool (each voice's
+/// render block included), the 16 channels, the preset lookup, the mix
+/// buffers — is allocated in `init`. After a host engine starts,
+/// `render`/`noteOn`/`noteOff`/`noteOffAll`/`processMidiMessage` allocate
+/// nothing and take no locks.
+///
+/// Threading: NOT thread-safe, mirroring the reference's documented contract.
+/// After the host's `start()` the instance is touched exclusively by the
+/// audio thread; control and render on separate threads must be serialized by
+/// the caller.
 public final class Synthesizer {
+    /// The number of MIDI channels. Always 16.
+    public static let channelCount = 16
+
+    /// The percussion channel index. Always 9.
+    public static let percussionChannel = 9
+
+    /// The SoundFont used as the audio source.
+    public let soundFont: SoundFont
+
     /// The sample rate for synthesis.
     public let sampleRate: Int
 
-    /// The block size for rendering waveform. Always 64
-    /// (`SynthesizerSettings.DefaultBlockSize`).
+    /// The block size for rendering waveform.
     public let blockSize: Int
 
-    /// The number of maximum polyphony (the fixed voice-pool size).
+    /// The number of maximum polyphony (the voice-pool size, 8...256).
     public let maximumPolyphony: Int
 
-    /// The master volume. Defaults to 0.5 (`Synthesizer.cs`'s
-    /// `masterVolume = 0.5F;` field initializer).
+    /// Whether reverb and chorus are enabled. P1: stored but inert — the
+    /// effects units are ported in Phase 2; rendering is dry until then.
+    public let enableReverbAndChorus: Bool
+
+    /// The master volume. Defaults to 0.5 (`Synthesizer.cs`'s field initializer).
     public var masterVolume: Float
 
-    private let soundFont: SoundFont
+    /// The number of voices currently being played.
+    public var activeVoiceCount: Int { voices.activeVoiceCount }
+
+    private let presetLookup: [Int: Preset]
     private let defaultPreset: Preset
 
-    private let channel: Channel
+    /// Channel 9 is percussion. Internal (not private) for @testable tests.
+    let channels: [Channel]
 
-    /// The fixed voice pool, allocated once at `init`. Never resized —
-    /// `requestVoice` reuses a `Voice` in place (SPIKE: simplified
-    /// `VoiceCollection`, see its doc comment) rather than growing the
-    /// array, so the render path never allocates.
-    private let voices: [Voice]
+    /// The steal-to-play voice pool. Internal (not private) for @testable tests.
+    let voices: VoiceCollection
 
     private var blockLeft: [Float]
     private var blockRight: [Float]
@@ -53,130 +67,174 @@ public final class Synthesizer {
 
     private var blockRead: Int
 
-    /// Initializes a new synthesizer using a specified SoundFont and sample
-    /// rate. Mirrors `Synthesizer(SoundFont, SynthesizerSettings)`, with
-    /// `SynthesizerSettings`'s constants (block size 64, default max
-    /// polyphony) folded in directly.
-    ///
-    /// ALLOCATION DISCIPLINE: every array here (the voice pool — including
-    /// each `Voice`'s own 64-frame `block` — and the `blockLeft`/
-    /// `blockRight` mix buffers) is allocated in this initializer. After
-    /// `init` returns, `render`/`noteOn`/`noteOff` allocate nothing.
-    public init(soundFont: SoundFont, sampleRate: Int, maximumPolyphony: Int = 8) throws {
+    /// Initializes a new synthesizer using a specified SoundFont and settings.
+    /// Mirrors `Synthesizer(SoundFont, SynthesizerSettings)`.
+    public init(soundFont: SoundFont, settings: SynthesizerSettings) throws {
         self.soundFont = soundFont
-        self.sampleRate = sampleRate
-        self.blockSize = 64
-        self.maximumPolyphony = maximumPolyphony
+        self.sampleRate = settings.sampleRate
+        self.blockSize = settings.blockSize
+        self.maximumPolyphony = settings.maximumPolyphony
+        self.enableReverbAndChorus = settings.enableReverbAndChorus
 
-        // SPIKE: bank 0 / patch 0 is the only preset this spike ever plays —
-        // no bank-select/program-change dispatch, no `presetLookup`
-        // dictionary, no GM-fallback chain (`Synthesizer.cs`'s `NoteOn`
-        // falls back through the patch-only and 128:0 percussion-kit preset
-        // IDs before settling on `defaultPreset`; this port has exactly one
-        // channel and hardwires straight to bank0/patch0).
-        guard let preset = soundFont.presets.first(where: { $0.bankNumber == 0 && $0.patchNumber == 0 }) else {
-            throw SwiftySynthError.invalidSoundFont("The SoundFont has no bank 0 / patch 0 preset.")
+        // Preset lookup: ID = (bank << 16) | patch. First occurrence wins
+        // (C# Dictionary.TryAdd), and the minimum ID becomes the default
+        // preset — for a GM-compatible font, the Grand Piano.
+        var presetLookup = [Int: Preset]()
+        presetLookup.reserveCapacity(soundFont.presets.count)
+        var defaultPreset: Preset? = nil
+        var minPresetId = Int.max
+        for preset in soundFont.presets {
+            let presetId = (preset.bankNumber << 16) | preset.patchNumber
+            if presetLookup[presetId] == nil {
+                presetLookup[presetId] = preset
+            }
+            if presetId < minPresetId {
+                defaultPreset = preset
+                minPresetId = presetId
+            }
         }
-        self.defaultPreset = preset
-
-        self.channel = Channel(isPercussionChannel: false)
-
-        var voices: [Voice] = []
-        voices.reserveCapacity(maximumPolyphony)
-        for _ in 0..<maximumPolyphony {
-            voices.append(Voice(sampleRate: sampleRate, blockSize: blockSize))
+        guard let defaultPreset else {
+            // C# covers this with Debug.Assert; file-derived data must never
+            // trap this port, so an empty preset list throws instead.
+            throw SwiftySynthError.invalidSoundFont("The SoundFont contains no presets.")
         }
-        self.voices = voices
+        self.presetLookup = presetLookup
+        self.defaultPreset = defaultPreset
 
-        self.blockLeft = [Float](repeating: 0, count: blockSize)
-        self.blockRight = [Float](repeating: 0, count: blockSize)
+        self.channels = (0..<Synthesizer.channelCount).map {
+            Channel(isPercussionChannel: $0 == Synthesizer.percussionChannel)
+        }
 
-        self.inverseBlockSize = 1 / Float(blockSize)
+        self.voices = VoiceCollection(
+            sampleRate: settings.sampleRate,
+            blockSize: settings.blockSize,
+            maximumPolyphony: settings.maximumPolyphony)
 
-        self.blockRead = blockSize
+        self.blockLeft = [Float](repeating: 0, count: settings.blockSize)
+        self.blockRight = [Float](repeating: 0, count: settings.blockSize)
+
+        self.inverseBlockSize = 1 / Float(settings.blockSize)
+
+        self.blockRead = settings.blockSize
 
         self.masterVolume = 0.5
     }
 
-    /// The number of voices currently being played. Mirrors
-    /// `VoiceCollection.ActiveVoiceCount`, adapted to this port's flag-based
-    /// fixed pool: counts pool voices whose `isActive` is currently true.
-    public var activeVoiceCount: Int {
-        var count = 0
-        for voice in voices where voice.isActive {
-            count += 1
-        }
-        return count
+    /// Initializes a new synthesizer using a specified SoundFont and sample
+    /// rate, with the canonical default settings (block 64, polyphony 64).
+    public convenience init(soundFont: SoundFont, sampleRate: Int) throws {
+        try self.init(soundFont: soundFont, settings: SynthesizerSettings(sampleRate: sampleRate))
     }
 
-    /// Starts a note on the (sole, hardwired) channel. Mirrors
-    /// `Synthesizer.NoteOn` narrowed to a single channel: velocity 0 is
-    /// treated as a note-off (matching `Synthesizer.cs`'s own `if (velocity
-    /// == 0) { NoteOff(...); return; }` at the top of `NoteOn`); otherwise
-    /// every preset region containing (key, velocity), crossed with every
-    /// contained region of its linked instrument, forms a `RegionPair` and
-    /// starts a free (or exclusive-class-matching) pool voice.
-    public func noteOn(key: Int, velocity: Int) {
+    /// Starts a note. Mirrors `Synthesizer.NoteOn`: velocity 0 is a note-off;
+    /// the channel's (bank, patch) resolves through the lookup, then the GM
+    /// fallback (patch under bank 0, or the standard percussion set 128:0 for
+    /// drum banks), then the default preset. Every matching preset-region ×
+    /// instrument-region pair starts a voice — and `requestNew` never fails,
+    /// so the note ALWAYS sounds (steal-to-play; the AUMIDISynth fix).
+    public func noteOn(key: Int, velocity: Int, on channel: Int) {
         if velocity == 0 {
-            noteOff(key: key)
+            noteOff(key: key, on: channel)
             return
         }
 
-        for presetRegion in defaultPreset.regions where presetRegion.contains(key: key, velocity: velocity) {
+        guard 0 <= channel && channel < channels.count else {
+            return
+        }
+        let channelInfo = channels[channel]
+
+        let presetId = (channelInfo.bankNumber << 16) | channelInfo.patchNumber
+        var preset = presetLookup[presetId]
+        if preset == nil {
+            let gmPresetId = channelInfo.bankNumber < 128 ? channelInfo.patchNumber : (128 << 16)
+            preset = presetLookup[gmPresetId]
+        }
+        let resolvedPreset = preset ?? defaultPreset
+
+        for presetRegion in resolvedPreset.regions where presetRegion.contains(key: key, velocity: velocity) {
             for instrumentRegion in presetRegion.instrument.regions where instrumentRegion.contains(key: key, velocity: velocity) {
-                let region = RegionPair(preset: presetRegion, instrument: instrumentRegion)
-                guard let voice = requestVoice(exclusiveClass: instrumentRegion.exclusiveClass) else {
-                    // SPIKE: the pool is exhausted. Canonical
-                    // `VoiceCollection.RequestNew` steals the active voice
-                    // with the lowest `Voice.Priority` (tie-broken by the
-                    // oldest `VoiceLength`) in this situation; priority-based
-                    // stealing is explicitly out of scope for this spike, so
-                    // the new voice is simply dropped instead.
-                    continue
-                }
-                voice.start(region: region, channel: 0, channelInfo: channel, data: soundFont.waveData, key: key, velocity: velocity)
+                let regionPair = RegionPair(preset: presetRegion, instrument: instrumentRegion)
+                let voice = voices.requestNew(region: instrumentRegion, channel: channel)
+                voice.start(
+                    region: regionPair, channel: channel, channelInfo: channelInfo,
+                    data: soundFont.waveData, key: key, velocity: velocity)
             }
         }
     }
 
-    /// Stops a note on the (sole, hardwired) channel. Mirrors
-    /// `Synthesizer.NoteOff` narrowed to a single channel: every active
-    /// voice at this key moves to its release phase.
-    public func noteOff(key: Int) {
-        for voice in voices where voice.isActive && voice.key == key {
-            voice.end()
+    /// Stops a note: every active voice at (channel, key) moves to release.
+    public func noteOff(key: Int, on channel: Int) {
+        guard 0 <= channel && channel < channels.count else {
+            return
+        }
+
+        for i in 0..<voices.activeVoiceCount {
+            let voice = voices[i]
+            if voice.channel == channel && voice.key == key {
+                voice.end()
+            }
         }
     }
 
-    /// Finds a voice to (re)start for a new note. Mirrors
-    /// `VoiceCollection.RequestNew`'s first two branches exactly — reuse an
-    /// active voice sharing this `exclusiveClass` (region-authored "choke"
-    /// behavior, e.g. closed/open hi-hat; NOT related to voice stealing), or
-    /// fall back to the next free (never-started-or-since-died) pool slot.
-    /// SPIKE: the third branch (steal the active voice with the lowest
-    /// priority once the pool is full) is dropped — see `noteOn`'s doc
-    /// comment. Returns `nil` in exactly that dropped case.
-    private func requestVoice(exclusiveClass: Int) -> Voice? {
-        if exclusiveClass != 0 {
-            for voice in voices where voice.isActive && voice.exclusiveClass == exclusiveClass {
-                return voice
+    /// Stops all notes. Mirrors `Synthesizer.NoteOffAll(bool)`: immediate
+    /// clears the pool outright; otherwise every voice enters release.
+    public func noteOffAll(immediate: Bool) {
+        if immediate {
+            voices.clear()
+        } else {
+            for i in 0..<voices.activeVoiceCount {
+                voices[i].end()
             }
         }
+    }
 
-        for voice in voices where !voice.isActive {
-            return voice
+    /// Stops all notes on one channel. Mirrors
+    /// `Synthesizer.NoteOffAll(int, bool)`: immediate kills (silences with no
+    /// release; the voice leaves the pool on its next process), else releases.
+    public func noteOffAll(channel: Int, immediate: Bool) {
+        for i in 0..<voices.activeVoiceCount {
+            let voice = voices[i]
+            guard voice.channel == channel else { continue }
+            if immediate {
+                voice.kill()
+            } else {
+                voice.end()
+            }
+        }
+    }
+
+    /// Mirrors `Synthesizer.ResetAllControllers()`.
+    public func resetAllControllers() {
+        for channel in channels {
+            channel.resetAllControllers()
+        }
+    }
+
+    /// Mirrors `Synthesizer.ResetAllControllers(int)`.
+    public func resetAllControllers(channel: Int) {
+        guard 0 <= channel && channel < channels.count else {
+            return
+        }
+        channels[channel].resetAllControllers()
+    }
+
+    /// Resets the synthesizer: clears all voices, resets every channel to its
+    /// MIDI defaults, and restarts the block carry. (P2 adds
+    /// `reverb.mute()` / `chorus.mute()` here.)
+    public func reset() {
+        voices.clear()
+
+        for channel in channels {
+            channel.reset()
         }
 
-        return nil
+        blockRead = blockSize
     }
 
     /// Renders `left.count` (== `right.count`) frames, carrying any partial
-    /// block across calls. Mirrors `Synthesizer.Render` exactly: `blockRead`
-    /// starts at `blockSize` (forcing an immediate `renderBlock` on the very
-    /// first call), and each iteration copies `min(blockSize - blockRead,
-    /// remaining)` frames out of the current mix block before refilling.
-    /// Correct for any caller chunk size (64-aligned or not) and across any
-    /// number of calls.
+    /// block across calls. Mirrors `Synthesizer.Render` exactly — UNCHANGED
+    /// spike code (G2-proven): correct for any caller chunk size and across
+    /// any number of calls.
     public func render(left: UnsafeMutableBufferPointer<Float>, right: UnsafeMutableBufferPointer<Float>) {
         precondition(left.count == right.count)
 
@@ -201,22 +259,19 @@ public final class Synthesizer {
         }
     }
 
-    /// Mirrors `Synthesizer.RenderBlock`, minus the reverb/chorus mixdown
-    /// (out of scope — see the class doc comment). Advances every active
-    /// voice by one block, mixing surviving voices into `blockLeft`/
-    /// `blockRight`; a voice whose `process()` returns false is left with
-    /// `isActive == false` (set by `Voice.process` itself) and is not mixed
-    /// this block, freeing its pool slot for `requestVoice`.
+    /// Mirrors `Synthesizer.RenderBlock` (dry half): `voices.process()`
+    /// advances/compacts the pool, then the surviving active prefix is mixed
+    /// in order — the same summation order as C#'s enumerator. The mix-gain
+    /// arithmetic is byte-for-byte the spike's G2-proven code.
     private func renderBlock() {
+        voices.process()
+
         for i in 0..<blockLeft.count {
             blockLeft[i] = 0
             blockRight[i] = 0
         }
-
-        for voice in voices where voice.isActive {
-            guard voice.process() else {
-                continue
-            }
+        for i in 0..<voices.activeVoiceCount {
+            let voice = voices[i]
 
             let previousGainLeft = masterVolume * voice.previousMixGainLeft
             let currentGainLeft = masterVolume * voice.currentMixGainLeft
@@ -226,19 +281,19 @@ public final class Synthesizer {
             let currentGainRight = masterVolume * voice.currentMixGainRight
             writeBlock(previousGain: previousGainRight, currentGain: currentGainRight, source: voice.block, destination: &blockRight)
         }
+
+        // P2 adds here, gated on `enableReverbAndChorus`: the chorus send
+        // build + process + multiplyAdd, then the reverb send (inputGain ×
+        // reverbSend × (mixGainLeft + mixGainRight)) + process + multiplyAdd
+        // (Synthesizer.cs RenderBlock's second half).
     }
 
     /// Mirrors `Synthesizer.WriteBlock`, with `ArrayMath.cs`'s two
-    /// `MultiplyAdd` overloads folded in as the flat/ramped branches below.
-    /// Copy the exact thresholds and formula shape:
-    /// - `max(previousGain, currentGain) < SoundFontMath.nonAudible` → skip
-    ///   entirely (both endpoints are inaudible).
-    /// - `abs(currentGain - previousGain) < 1.0e-3` → flat multiply-add
-    ///   (`ArrayMath.MultiplyAdd(float, float[], float[])`).
-    /// - otherwise → linear ramp across the block
-    ///   (`ArrayMath.MultiplyAdd(float, float, float[], float[])`), stepping
-    ///   `previousGain` toward `currentGain` by `(currentGain -
-    ///   previousGain) / blockSize` per sample.
+    /// `MultiplyAdd` overloads folded in as the flat/ramped branches below —
+    /// UNCHANGED spike code (G2-proven). Copy the exact thresholds:
+    /// - `max(previousGain, currentGain) < SoundFontMath.nonAudible` → skip.
+    /// - `abs(currentGain - previousGain) < 1.0e-3` → flat multiply-add.
+    /// - otherwise → linear ramp, stepping by `(current - previous) / blockSize`.
     private func writeBlock(previousGain: Float, currentGain: Float, source: [Float], destination: inout [Float]) {
         if max(previousGain, currentGain) < SoundFontMath.nonAudible {
             return

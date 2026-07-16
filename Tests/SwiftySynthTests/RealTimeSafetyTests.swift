@@ -53,9 +53,9 @@ enum RenderBlockFactory {
                   harness.events[harness.eventIndex].frame <= harness.framesRendered {
                 let event = harness.events[harness.eventIndex]
                 if event.isOn {
-                    harness.synthesizer.noteOn(key: event.key, velocity: event.velocity)
+                    harness.synthesizer.noteOn(key: event.key, velocity: event.velocity, on: 0)
                 } else {
-                    harness.synthesizer.noteOff(key: event.key)
+                    harness.synthesizer.noteOff(key: event.key, on: 0)
                 }
                 harness.eventIndex += 1
             }
@@ -115,9 +115,9 @@ struct RealTimeSafetyTests {
 
         // Warm-up: first-touch lazy runtime state, envelope stage transitions, voice
         // spawn/free cycles.
-        synth.noteOn(key: 60, velocity: 100)
+        synth.noteOn(key: 60, velocity: 100, on: 0)
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
-        synth.noteOff(key: 60)
+        synth.noteOff(key: 60, on: 0)
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
 
         var before = malloc_statistics_t()
@@ -125,11 +125,11 @@ struct RealTimeSafetyTests {
 
         // Measured region: 1000 callbacks' worth of rendering plus note events.
         // NO print/log in here.
-        synth.noteOn(key: 60, velocity: 100)
+        synth.noteOn(key: 60, velocity: 100, on: 0)
         for i in 0..<1_000 {
-            if i == 300 { synth.noteOff(key: 60) }
-            if i == 400 { synth.noteOn(key: 64, velocity: 90) }
-            if i == 800 { synth.noteOff(key: 64) }
+            if i == 300 { synth.noteOff(key: 60, on: 0) }
+            if i == 400 { synth.noteOn(key: 64, velocity: 90, on: 0) }
+            if i == 800 { synth.noteOff(key: 64, on: 0) }
             renderInto(synth, &left, &right, 0..<512)
         }
 
@@ -168,12 +168,12 @@ struct RealTimeSafetyTests {
 
         // --- 1 note, pool 8 -----------------------------------------------------------
         let synth1 = try Synthesizer(soundFont: font, sampleRate: 44_100)
-        synth1.noteOn(key: 60, velocity: 100)
+        synth1.noteOn(key: 60, velocity: 100, on: 0)
         for _ in 0..<100 { renderInto(synth1, &left, &right, 0..<512) }   // warm-up
         var oneNoteSamples = [UInt64]()
         oneNoteSamples.reserveCapacity(1_000)
         for i in 0..<1_000 {
-            if i % 100 == 0 { synth1.noteOn(key: 60, velocity: 100) }     // keep voices live
+            if i % 100 == 0 { synth1.noteOn(key: 60, velocity: 100, on: 0) }     // keep voices live
             let t0 = mach_absolute_time()
             renderInto(synth1, &left, &right, 0..<512)
             oneNoteSamples.append(MachTime.toNanos(mach_absolute_time() - t0))
@@ -186,8 +186,10 @@ struct RealTimeSafetyTests {
         // fixture's bank-0/patch-0 (Grand Piano) preset is ~1 voice per note-on instead
         // (verified via a throwaway diagnostic: 32 distinct keys -> 33 active voices),
         // so 64 distinct keys are fired here to actually fill the 64-voice pool.
-        let synth64 = try Synthesizer(soundFont: font, sampleRate: 44_100, maximumPolyphony: 64)
-        for key in 22..<86 { synth64.noteOn(key: key, velocity: 100) }
+        let synth64 = try Synthesizer(
+            soundFont: font,
+            settings: try SynthesizerSettings(sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false))
+        for key in 22..<86 { synth64.noteOn(key: key, velocity: 100, on: 0) }
         let saturatedVoices = synth64.activeVoiceCount
         #expect(saturatedVoices >= 48, "expected a saturated pool (≈64 voices), got \(saturatedVoices)")
         for _ in 0..<100 { renderInto(synth64, &left, &right, 0..<512) }  // warm-up
@@ -195,7 +197,7 @@ struct RealTimeSafetyTests {
         saturatedSamples.reserveCapacity(1_000)
         for i in 0..<1_000 {
             if i % 200 == 0 {
-                for key in 22..<86 { synth64.noteOn(key: key, velocity: 100) }  // refill pool
+                for key in 22..<86 { synth64.noteOn(key: key, velocity: 100, on: 0) }  // refill pool
             }
             let t0 = mach_absolute_time()
             renderInto(synth64, &left, &right, 0..<512)

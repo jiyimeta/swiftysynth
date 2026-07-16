@@ -85,9 +85,9 @@ enum RenderBlockFactory {
                   harness.events[harness.eventIndex].frame <= harness.framesRendered {
                 let event = harness.events[harness.eventIndex]
                 if event.isOn {
-                    harness.synthesizer.noteOn(key: event.key, velocity: event.velocity)
+                    harness.synthesizer.noteOn(key: event.key, velocity: event.velocity, on: 0)
                 } else {
-                    harness.synthesizer.noteOff(key: event.key)
+                    harness.synthesizer.noteOff(key: event.key, on: 0)
                 }
                 harness.eventIndex += 1
             }
@@ -209,9 +209,9 @@ case "export":
         }
     }
     // Same two-chunk schedule as the G2 fixture, for by-ear comparison with the oracle WAV.
-    synthesizer.noteOn(key: 60, velocity: 100)
+    synthesizer.noteOn(key: 60, velocity: 100, on: 0)
     render(0..<88_200)
-    synthesizer.noteOff(key: 60)
+    synthesizer.noteOff(key: 60, on: 0)
     render(88_200..<220_500)
 
     let url = URL(fileURLWithPath: arguments[3])
