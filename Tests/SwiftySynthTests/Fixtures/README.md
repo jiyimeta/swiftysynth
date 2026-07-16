@@ -80,9 +80,16 @@ float32 stereo, block 64, polyphony 64, **reverb + chorus ON**, master
 volume 0.5. Effects-focused coverage: the 40/127 channel-default reverb
 send, explicit reverb-send changes (incl. mid-note ramps), chorus enabled
 via CC 0x5D (off by channel default) from frame 0 / raised mid-note /
-switched on mid-note, percussion through the reverb bus, and a final ~2 s
-of pure release + effects tail (the feedback-drift region the calibrated
-G2-fx tolerance is measured on).
+switched on mid-note, percussion through the reverb bus including a crash
+cymbal (on at frame 108045, off at frame 127890) whose bright reverb/chorus
+decay rings on into the tail, and a final GENUINE ~2 s pure tail: the LAST
+message of any kind (a note-off) lands at frame 132300, so frames
+132300–220500 carry ZERO note-on/off/CC events — the tail there is fed only
+by decaying reverb/chorus state (the feedback-drift region the calibrated
+G2-fx tolerance is measured on). The crash is deliberately placed BEFORE
+frame 132300 rather than mid-tail (as an earlier draft of this vector had
+it) so it enriches that decaying state instead of injecting fresh energy
+into the drift-calibration window.
 
 Same dual-normative `messages` convention as `multi-gm-dry`: the event
 stream AND the shared chunk-boundary list. Same stream constraints (no

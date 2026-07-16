@@ -617,11 +617,19 @@ fn render_multi(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
 ///   - reverb: the channel-default send (40/127) on every melodic channel,
 ///     an explicit high send (ch1), a mid-note send drop (exercises the
 ///     send-gain ramp), and percussion (ch9) through the reverb bus with a
-///     crash tail;
+///     crash cymbal (on at frame 108045, off at frame 127890 — both BEFORE
+///     the pure-tail boundary below) whose bright reverb/chorus decay rings
+///     on into the pure tail, enriching the drift signal without injecting
+///     any new energy after the boundary;
 ///   - chorus: OFF by channel default — explicitly enabled on ch0 from
 ///     frame 0 (CC 0x5D), raised mid-note, switched on mid-note on ch2;
-///   - the final ~2 s are release + effects tail only: the feedback-drift
-///     accumulation region the empirical G2-fx tolerance is calibrated on.
+///   - the LAST message of any kind lands at frame 132300 (3.0 s — the
+///     strings/guitar note-offs). Frames 132300..220500 — a genuine ~2.0 s
+///     span — carry ZERO note-on/off/CC events: a true pure tail with no
+///     new input, its signal supplied only by the reverb/chorus comb state
+///     already accumulated (including the crash's decay). This is the
+///     feedback-drift accumulation region the empirical G2-fx tolerance is
+///     calibrated on (Task 6).
 ///
 /// STREAM CONSTRAINTS (Channel-model divergence, see the P1 plan's Global
 /// Constraints): no NRPN (CC 0x62/0x63) and no data entry at all, so the
@@ -645,13 +653,17 @@ const FX_MESSAGES: &[(usize, i32, i32, i32, i32)] = &[
     (44_100, 0, 0xB0, 0x5D, 127),  // ch0: chorus send max, mid-note (send ramp)
     (66_150, 1, 0xB0, 0x5B, 20),   // ch1: reverb send down, mid-note (send ramp)
     (88_200, 2, 0xB0, 0x5D, 96),   // ch2: chorus appears mid-note
+    (108_045, 9, 0x90, 49, 110),   // ch9: crash cymbal — relocated ahead of the pure-tail
+                                    // boundary so its decay rings THROUGH frame 132300+
+                                    // instead of injecting fresh energy inside it
     (110_250, 0, 0x80, 60, 0),     // ch0: chord off — chorus + reverb tails
     (110_250, 0, 0x80, 64, 0),
     (110_250, 0, 0x80, 67, 0),
-    (132_300, 1, 0x80, 55, 0),     // ch1: strings off — long reverb tail
+    (127_890, 9, 0x80, 49, 0),     // ch9: crash off — still before the pure-tail boundary
+    (132_300, 1, 0x80, 55, 0),     // ch1: strings off — long reverb tail; LAST message in
+                                    // the stream: frames 132300..220500 carry NO further
+                                    // note-on/off/CC — the genuine ~2 s pure tail
     (132_300, 2, 0x80, 48, 0),     // ch2: guitar off
-    (154_350, 9, 0x90, 49, 110),   // ch9: crash cymbal — bright tail into the reverb
-    (176_400, 9, 0x80, 49, 0),     // final 2 s: pure tail (drift-calibration region)
 ];
 
 fn render_fx(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
