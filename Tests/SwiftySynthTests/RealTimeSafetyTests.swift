@@ -139,10 +139,14 @@ struct RealTimeSafetyTests {
     /// window's INTRINSIC delta is exactly 0 (alloc-free) or a positive floor
     /// (regression); any NEGATIVE delta is provably external. So: measure short
     /// windows, retrying; PASS as soon as one window is non-positive (a quiet or
-    /// externally-freed window — only possible when the render path added
-    /// nothing); FAIL only when EVERY window netted a positive delta (the
-    /// reproducible signature of a real leak, which cross-suite noise cannot
-    /// forge across all windows). The exact 0/0 STRICT WITNESS is logged here
+    /// externally-freed window). A real per-render leak carries its positive floor
+    /// into EVERY window, so it can never satisfy that — but note a large external
+    /// negative (e.g. an AVAudioEngine-teardown deferred-free from a sibling test)
+    /// could in principle mask a SMALL intrinsic leak in a given window, so this
+    /// parallel-run PASS is a reliability filter, not the proof. FAIL only when
+    /// EVERY window netted a positive delta (the reproducible signature of a real
+    /// leak, which cross-suite noise cannot forge across all windows). The
+    /// authoritative zero-alloc proof is the exact 0/0 STRICT WITNESS, logged here
     /// and enforced in the isolated run
     /// (`swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup`),
     /// where the process-global zone has no concurrent contamination (Task 12).
