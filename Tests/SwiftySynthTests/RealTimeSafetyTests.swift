@@ -5,23 +5,27 @@ import Testing
 #if os(macOS)
 import AVFoundation
 
-struct SpikeNoteEvent {
+/// A raw MIDI event scheduled at an absolute frame — dispatched INSIDE the
+/// render block through the faithful `processMidiMessage` path, exactly as
+/// the P3 sequencer will drive the synthesizer.
+struct RTMidiEvent {
     let frame: Int64
-    let isOn: Bool
-    let key: Int
-    let velocity: Int
+    let channel: Int
+    let command: Int
+    let data1: Int
+    let data2: Int
 }
 
 /// Single-owner state handed to the audio render thread. `@unchecked Sendable` is sound
 /// here because after `engine.start()` only the render thread touches the mutable fields,
 /// and the test thread reads them only after `engine.stop()` (happens-before via stop).
-final class SpikeRenderHarness: @unchecked Sendable {
+final class RenderHarness: @unchecked Sendable {
     let synthesizer: Synthesizer
-    let events: [SpikeNoteEvent]
+    let events: [RTMidiEvent]
     var eventIndex = 0
     var framesRendered: Int64 = 0
 
-    init(synthesizer: Synthesizer, events: [SpikeNoteEvent]) {
+    init(synthesizer: Synthesizer, events: [RTMidiEvent]) {
         self.synthesizer = synthesizer
         self.events = events
     }
@@ -32,7 +36,7 @@ enum RenderBlockFactory {
     /// inherits MainActor isolation and traps EXC_BREAKPOINT on the audio thread under the
     /// Swift concurrency runtime — and OFFLINE rendering does not reproduce the trap,
     /// which is why this test uses a live AVAudioSourceNode (spec §8).
-    nonisolated static func makeSourceNode(harness: SpikeRenderHarness) -> AVAudioSourceNode {
+    nonisolated static func makeSourceNode(harness: RenderHarness) -> AVAudioSourceNode {
         let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
         return AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList in
             let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
@@ -47,16 +51,15 @@ enum RenderBlockFactory {
             let right = UnsafeMutableBufferPointer(
                 start: rawRight.assumingMemoryBound(to: Float.self), count: frames)
 
-            // Spike event model (spec §8): events are driven INSIDE the render block by
-            // comparing a running frame counter against preplanned event frames.
+            // Events are driven INSIDE the render block by comparing a running
+            // frame counter against preplanned event frames (spike model),
+            // now through the raw multichannel dispatch.
             while harness.eventIndex < harness.events.count,
                   harness.events[harness.eventIndex].frame <= harness.framesRendered {
                 let event = harness.events[harness.eventIndex]
-                if event.isOn {
-                    harness.synthesizer.noteOn(key: event.key, velocity: event.velocity, on: 0)
-                } else {
-                    harness.synthesizer.noteOff(key: event.key, on: 0)
-                }
+                harness.synthesizer.processMidiMessage(
+                    channel: event.channel, command: event.command,
+                    data1: event.data1, data2: event.data2)
                 harness.eventIndex += 1
             }
 
@@ -71,19 +74,31 @@ enum RenderBlockFactory {
 @Suite(.serialized)
 struct RealTimeSafetyTests {
     #if os(macOS)
-    /// **G3 (no-trap)** — ≥5 s of live rendering on a real AVAudioSourceNode render
-    /// thread with a factory-built block; surviving to the assertions == zero traps.
+    /// **G3′-dry (no-trap)** — ≥5 s of live multichannel rendering on a real
+    /// AVAudioSourceNode render thread, every event dispatched through
+    /// processMidiMessage inside the callback; surviving to the assertions == zero traps.
     @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
     func noTrapOnRenderThread() throws {
         let font = try SoundFont(url: FixtureSF2.url)
-        let synth = try Synthesizer(soundFont: font, sampleRate: 44_100)
-        let harness = SpikeRenderHarness(
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
+        let harness = RenderHarness(
             synthesizer: synth,
             events: [
-                SpikeNoteEvent(frame: 0, isOn: true, key: 60, velocity: 100),
-                SpikeNoteEvent(frame: 88_200, isOn: false, key: 60, velocity: 0),
-                SpikeNoteEvent(frame: 132_300, isOn: true, key: 64, velocity: 90),
-                SpikeNoteEvent(frame: 176_400, isOn: false, key: 64, velocity: 0),
+                RTMidiEvent(frame: 0, channel: 0, command: 0xC0, data1: 0, data2: 0),
+                RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 60, data2: 100),
+                RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 64, data2: 96),
+                RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 67, data2: 92),
+                RTMidiEvent(frame: 22_050, channel: 9, command: 0x90, data1: 36, data2: 127),
+                RTMidiEvent(frame: 44_100, channel: 1, command: 0x90, data1: 55, data2: 90),
+                RTMidiEvent(frame: 66_150, channel: 1, command: 0xE0, data1: 0, data2: 96),
+                RTMidiEvent(frame: 88_200, channel: 0, command: 0x80, data1: 60, data2: 0),
+                RTMidiEvent(frame: 88_200, channel: 0, command: 0xB0, data1: 0x07, data2: 80),
+                RTMidiEvent(frame: 132_300, channel: 0, command: 0x80, data1: 64, data2: 0),
+                RTMidiEvent(frame: 132_300, channel: 0, command: 0x80, data1: 67, data2: 0),
+                RTMidiEvent(frame: 154_350, channel: 1, command: 0x80, data1: 55, data2: 0),
+                RTMidiEvent(frame: 176_400, channel: 0, command: 0xB0, data1: 0x7B, data2: 0),
             ])
         let node = RenderBlockFactory.makeSourceNode(harness: harness)
 
@@ -103,33 +118,38 @@ struct RealTimeSafetyTests {
     }
     #endif
 
-    /// **G3 (zero-alloc)** — after warm-up, N further renders (including noteOn/noteOff,
-    /// which the spike drives from the render thread) allocate nothing: default-malloc-zone
-    /// deltas are exactly zero.
+    /// **G3′-dry (zero-alloc)** — after warm-up, 1000 callbacks' worth of
+    /// rendering — now including full-pool steal bursts and raw MIDI dispatch —
+    /// allocate nothing: default-malloc-zone deltas do not increase.
     @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
     func zeroAllocationAfterWarmup() throws {
         let font = try SoundFont(url: FixtureSF2.url)
-        let synth = try Synthesizer(soundFont: font, sampleRate: 44_100)
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
         var left = [Float](repeating: 0, count: 512)
         var right = [Float](repeating: 0, count: 512)
 
-        // Warm-up: first-touch lazy runtime state, envelope stage transitions, voice
-        // spawn/free cycles.
-        synth.noteOn(key: 60, velocity: 100, on: 0)
+        // Warm-up: saturate the pool, force a full 64-steal burst, run the
+        // dispatch paths, cycle voice spawn/free.
+        for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
-        synth.noteOff(key: 60, on: 0)
+        for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }   // 64 steals
+        synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80)
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
 
         var before = malloc_statistics_t()
         malloc_zone_statistics(malloc_default_zone(), &before)
 
-        // Measured region: 1000 callbacks' worth of rendering plus note events.
-        // NO print/log in here.
-        synth.noteOn(key: 60, velocity: 100, on: 0)
+        // Measured region: renders + periodic full-pool steal bursts + raw
+        // dispatch + note-offs. NO print/log in here.
         for i in 0..<1_000 {
-            if i == 300 { synth.noteOff(key: 60, on: 0) }
-            if i == 400 { synth.noteOn(key: 64, velocity: 90, on: 0) }
-            if i == 800 { synth.noteOff(key: 64, on: 0) }
+            if i % 200 == 0 {
+                for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }   // steals on a full pool
+            }
+            if i % 100 == 50 { synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80) }
+            if i % 100 == 75 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x07, data2: 90) }
+            if i == 500 { for key in 22..<40 { synth.noteOff(key: key, on: 0) } }
             renderInto(synth, &left, &right, 0..<512)
         }
 
@@ -146,15 +166,16 @@ struct RealTimeSafetyTests {
         // assertions, so relaxing `==` to `<=` cannot mask a real regression; a negative
         // delta can only come from that external cross-test deferred-free noise, never
         // from the render path allocating. The strict witness (delta == 0 exactly) is the
-        // isolated/solo run of this test, verified in Task 24.
+        // isolated/solo run of this test, verified in Task 12.
         #expect(after.blocks_in_use <= before.blocks_in_use,
                 "render path allocated: blocks_in_use delta = \(Int(after.blocks_in_use) - Int(before.blocks_in_use))")
         #expect(after.size_in_use <= before.size_in_use,
                 "render path allocated: size_in_use delta = \(Int(after.size_in_use) - Int(before.size_in_use))")
     }
 
-    /// **G3 (CPU)** — per-callback cost at 512-frame buffers (deadline 11.61 ms @ 44.1 kHz):
-    /// p99 < 25% for 1 note; p99 < 50% for a saturated 64-voice pool.
+    /// **G3′-dry (CPU)** — per-callback cost at 512-frame buffers (deadline
+    /// 11.61 ms @ 44.1 kHz): p99 < 25% for 1 note; p99 < 50% for a saturated
+    /// 256-voice pool (the canonical polyphony ceiling).
     /// Release builds only — debug-build timings measure the optimizer, not the design.
     @Test(
         .enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
@@ -166,51 +187,55 @@ struct RealTimeSafetyTests {
         var left = [Float](repeating: 0, count: 512)
         var right = [Float](repeating: 0, count: 512)
 
-        // --- 1 note, pool 8 -----------------------------------------------------------
-        let synth1 = try Synthesizer(soundFont: font, sampleRate: 44_100)
+        // --- 1 note, dry default-size pool ---------------------------------------------
+        let settings1 = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+        let synth1 = try Synthesizer(soundFont: font, settings: settings1)
         synth1.noteOn(key: 60, velocity: 100, on: 0)
         for _ in 0..<100 { renderInto(synth1, &left, &right, 0..<512) }   // warm-up
         var oneNoteSamples = [UInt64]()
         oneNoteSamples.reserveCapacity(1_000)
         for i in 0..<1_000 {
-            if i % 100 == 0 { synth1.noteOn(key: 60, velocity: 100, on: 0) }     // keep voices live
+            if i % 100 == 0 { synth1.noteOn(key: 60, velocity: 100, on: 0) }   // keep voices live
             let t0 = mach_absolute_time()
             renderInto(synth1, &left, &right, 0..<512)
             oneNoteSamples.append(MachTime.toNanos(mach_absolute_time() - t0))
         }
         let p99OneNote = Double(percentile(0.99, of: oneNoteSamples))
 
-        // --- saturated pool: perf-only instance, capacity 64, 64 note-ons --------------
-        // PORT ADAPTATION: the brief's original 32-key range assumed stereo (L+R)
-        // sample pairs per note-on, doubling to ~64 voices. The locked GeneralUser GS
-        // fixture's bank-0/patch-0 (Grand Piano) preset is ~1 voice per note-on instead
-        // (verified via a throwaway diagnostic: 32 distinct keys -> 33 active voices),
-        // so 64 distinct keys are fired here to actually fill the 64-voice pool.
-        let synth64 = try Synthesizer(
-            soundFont: font,
-            settings: try SynthesizerSettings(sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false))
-        for key in 22..<86 { synth64.noteOn(key: key, velocity: 100, on: 0) }
-        let saturatedVoices = synth64.activeVoiceCount
-        #expect(saturatedVoices >= 48, "expected a saturated pool (≈64 voices), got \(saturatedVoices)")
-        for _ in 0..<100 { renderInto(synth64, &left, &right, 0..<512) }  // warm-up
+        // --- saturated 256-voice pool: 64 distinct keys × 4 melodic channels ------------
+        // (GeneralUser GS Grand Piano = 1 panned-mono voice per noteOn, so 64
+        // keys fill 64 slots per channel; channels 0..3 share the default
+        // piano preset.)
+        let settings256 = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 256, enableReverbAndChorus: false)
+        let synth256 = try Synthesizer(soundFont: font, settings: settings256)
+        for channel in 0..<4 {
+            for key in 22..<86 { synth256.noteOn(key: key, velocity: 100, on: channel) }
+        }
+        let saturatedVoices = synth256.activeVoiceCount
+        #expect(saturatedVoices >= 192, "expected a saturated pool (≈256 voices), got \(saturatedVoices)")
+        for _ in 0..<100 { renderInto(synth256, &left, &right, 0..<512) }  // warm-up
         var saturatedSamples = [UInt64]()
         saturatedSamples.reserveCapacity(1_000)
         for i in 0..<1_000 {
             if i % 200 == 0 {
-                for key in 22..<86 { synth64.noteOn(key: key, velocity: 100, on: 0) }  // refill pool
+                for channel in 0..<4 {
+                    for key in 22..<86 { synth256.noteOn(key: key, velocity: 100, on: channel) }  // refill pool
+                }
             }
             let t0 = mach_absolute_time()
-            renderInto(synth64, &left, &right, 0..<512)
+            renderInto(synth256, &left, &right, 0..<512)
             saturatedSamples.append(MachTime.toNanos(mach_absolute_time() - t0))
         }
         let p99Saturated = Double(percentile(0.99, of: saturatedSamples))
 
-        print("G3-cpu: deadline=\(deadlineNanos)ns  1-note p99=\(p99OneNote)ns (\(100 * p99OneNote / deadlineNanos)%)  64-voice p99=\(p99Saturated)ns (\(100 * p99Saturated / deadlineNanos)%)  voices=\(saturatedVoices)")
+        print("G3-cpu: deadline=\(deadlineNanos)ns  1-note p99=\(p99OneNote)ns (\(100 * p99OneNote / deadlineNanos)%)  256-voice p99=\(p99Saturated)ns (\(100 * p99Saturated / deadlineNanos)%)  voices=\(saturatedVoices)")
 
         #expect(p99OneNote < 0.25 * deadlineNanos,
                 "1-note p99 \(p99OneNote) ns is ≥ 25% of the 11.6 ms deadline")
         #expect(p99Saturated < 0.50 * deadlineNanos,
-                "64-voice p99 \(p99Saturated) ns is ≥ 50% of the 11.6 ms deadline")
+                "256-voice p99 \(p99Saturated) ns is ≥ 50% of the 11.6 ms deadline")
     }
 }
 
