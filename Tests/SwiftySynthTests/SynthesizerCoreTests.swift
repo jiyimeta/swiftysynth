@@ -12,7 +12,13 @@ struct SynthesizerCoreTests {
         if let settings {
             return try Synthesizer(soundFont: font, settings: settings)
         }
-        return try Synthesizer(soundFont: font, sampleRate: 44_100)
+        // These tests assert only channel-state/voice-count structure, never
+        // PCM, so the effects bus is disabled to avoid allocating an unused
+        // chorus table. The maximumPolyphony/blockSize/masterVolume values
+        // asserted below are unaffected by this flag.
+        return try Synthesizer(
+            soundFont: font,
+            settings: SynthesizerSettings(sampleRate: 44_100, enableReverbAndChorus: false))
     }
 
     @Test func initBuildsSixteenChannelsWithPercussionAtNine() throws {

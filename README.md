@@ -17,7 +17,7 @@ green. MIDI file playback (P3) and API polish (P4) follow.**
 | G2-multi multichannel dry PCM equivalence | pass — left: maxAbs 2.83e-07, SNR 124.82 dB; right: maxAbs 2.68e-07, SNR 124.96 dB (bar: ≤1e-4 / ≥80 dB) |
 | G-steal voice-stealing behavior | pass — zero dropped notes under saturation; killed → release-tail → never-sustained steal order; older-voice tie-break pinned hermetically |
 | G3′-dry real-time safety | pass — ≥5 s multichannel processMidiMessage-driven live no-trap; zero malloc delta incl. full-pool steal bursts; p99 0.46% (1 note) / 9.32% (256 voices) of the 11.6 ms deadline |
-| G2-fx effects equivalence | pass — component: hand-derived Freeverb comb/allpass + chorus fractional-delay invariants (no rustysynth component taps — pub(crate)); e2e effects-on vs oracle: left maxAbs 3.13e-07, SNR 122.89 dB; right maxAbs 2.68e-07, SNR 123.11 dB (bar: unchanged dry bar ≤1e-4 / ≥80 dB — decision-table case 1, no calibration) |
+| G2-fx effects equivalence | pass — component: hand-derived Freeverb comb/allpass + chorus fractional-delay invariants (no rustysynth component taps — pub(crate)); e2e effects-on vs oracle: left: maxAbs 3.13e-07, SNR 122.89 dB; right: maxAbs 2.68e-07, SNR 123.11 dB (bar: unchanged dry bar ≤1e-4 / ≥80 dB — decision-table case 1, no calibration) |
 | G3-fx real-time safety (effects on) | pass — ≥5 s effects-on live no-trap; zero malloc delta with the effects bus active (strict solo 0/0 witness); p99 1.07% (1 note) / 25.58% (256 voices) of the 11.6 ms deadline |
 
 ## Scope so far

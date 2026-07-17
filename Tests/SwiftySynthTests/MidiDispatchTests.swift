@@ -9,7 +9,11 @@ import Testing
 struct MidiDispatchTests {
     private func makeSynth() throws -> Synthesizer {
         let font = try SoundFont(data: SyntheticSF2.minimal())
-        return try Synthesizer(soundFont: font, sampleRate: 44_100)
+        // These tests assert only channel-state structure, never PCM, so the
+        // effects bus is disabled to avoid allocating an unused chorus table.
+        return try Synthesizer(
+            soundFont: font,
+            settings: SynthesizerSettings(sampleRate: 44_100, enableReverbAndChorus: false))
     }
 
     @Test func controllerMessagesUpdateOnlyTheirChannel() throws {
