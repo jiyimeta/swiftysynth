@@ -1,0 +1,289 @@
+{
+  "length": 4.600000000000001,
+  "loopType": "none",
+  "messageCount": 37,
+  "messages": [
+    {
+      "channel": 0,
+      "command": 192,
+      "data1": 0,
+      "data2": 0,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 60,
+      "data2": 100,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 64,
+      "data2": 96,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 192,
+      "data1": 48,
+      "data2": 0,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 176,
+      "data1": 7,
+      "data2": 100,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 176,
+      "data1": 10,
+      "data2": 30,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 176,
+      "data1": 101,
+      "data2": 0,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 176,
+      "data1": 100,
+      "data2": 0,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 176,
+      "data1": 6,
+      "data2": 4,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 36,
+      "data2": 127,
+      "time": 0.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 36,
+      "data2": 0,
+      "time": 0.25,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 144,
+      "data1": 55,
+      "data2": 90,
+      "time": 0.5,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 42,
+      "data2": 100,
+      "time": 0.5,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 42,
+      "data2": 0,
+      "time": 0.75,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 60,
+      "data2": 0,
+      "time": 0.9375,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 64,
+      "data2": 0,
+      "time": 0.9375,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 67,
+      "data2": 96,
+      "time": 1.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 176,
+      "data1": 116,
+      "data2": 0,
+      "time": 1.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 38,
+      "data2": 110,
+      "time": 1.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 38,
+      "data2": 0,
+      "time": 1.25,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 224,
+      "data1": 0,
+      "data2": 80,
+      "time": 1.5,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 67,
+      "data2": 0,
+      "time": 1.9583333333333333,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 72,
+      "data2": 100,
+      "time": 2.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 36,
+      "data2": 127,
+      "time": 2.0,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 36,
+      "data2": 0,
+      "time": 2.2,
+      "type": "normal"
+    },
+    {
+      "channel": 1,
+      "command": 224,
+      "data1": 0,
+      "data2": 64,
+      "time": 2.4000000000000004,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 72,
+      "data2": 0,
+      "time": 2.8000000000000003,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 38,
+      "data2": 110,
+      "time": 2.8000000000000003,
+      "type": "normal"
+    },
+    {
+      "channel": 9,
+      "command": 144,
+      "data1": 38,
+      "data2": 0,
+      "time": 3.0000000000000004,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 65,
+      "data2": 90,
+      "time": 3.2000000000000006,
+      "type": "normal"
+    },
+    {
+      "channel": 0,
+      "command": 144,
+      "data1": 65,
+      "data2": 0,
+      "time": 4.000000000000001,
+      "type": "normal"
+    },
+    {
+      "time": 4.000000000000001,
+      "type": "endOfTrack"
+    },
+    {
+      "time": 4.400000000000001,
+      "type": "endOfTrack"
+    },
+    {
+      "channel": 9,
+      "command": 176,
+      "data1": 117,
+      "data2": 0,
+      "time": 4.400000000000001,
+      "type": "normal"
+    },
+    {
+      "time": 4.400000000000001,
+      "type": "endOfTrack"
+    },
+    {
+      "channel": 1,
+      "command": 128,
+      "data1": 55,
+      "data2": 0,
+      "time": 4.600000000000001,
+      "type": "normal"
+    },
+    {
+      "time": 4.600000000000001,
+      "type": "endOfTrack"
+    }
+  ],
+  "midiSha256": "dcf8008a16a43addcc39c92e76b90346ae922dda64662c6c27b6b47c6ffbc3b7",
+  "rustysynthVersion": "1.3.6"
+}

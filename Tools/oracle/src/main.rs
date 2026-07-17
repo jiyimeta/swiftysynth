@@ -22,6 +22,9 @@ fn main() -> ExitCode {
         Some("render-multi") if args.len() == 5 => render_multi(&args[2], &args[3], &args[4]),
         Some("render-fx") if args.len() == 5 => render_fx(&args[2], &args[3], &args[4]),
         Some("probe-midi") if args.len() == 3 => probe_midi(&args[2]),
+        Some("make-midi") if args.len() == 3 => make_midi(&args[2]),
+        Some("dump-midi") if args.len() == 5 => dump_midi(&args[2], &args[3], &args[4]),
+        Some("render-midi") if args.len() == 6 => render_midi(&args[2], &args[3], &args[4], &args[5]),
         _ => {
             eprintln!("usage: oracle dump-font <sf2> <out.json>");
             eprintln!("       oracle render-note <sf2> <out.wav> <out.json>");
@@ -29,6 +32,9 @@ fn main() -> ExitCode {
             eprintln!("       oracle render-multi <sf2> <out.wav> <out.json>");
             eprintln!("       oracle render-fx <sf2> <out.wav> <out.json>");
             eprintln!("       oracle probe-midi <sf2>");
+            eprintln!("       oracle make-midi <out.mid>");
+            eprintln!("       oracle dump-midi <mid> <none|rpgmaker|incrediblemachine|finalfantasy> <out.json>");
+            eprintln!("       oracle render-midi <sf2> <mid> <out.wav> <out.json>");
             ExitCode::FAILURE
         }
     }
@@ -188,7 +194,6 @@ fn parse_debug_times(section: &str) -> Vec<f64> {
 }
 
 /// CLI loop-type names shared by dump-midi and the fixtures' provenance.
-#[allow(dead_code)] // consumed by Task 2's dump-midi / render-midi loop-type arg
 fn parse_loop_type(arg: &str) -> rustysynth::MidiFileLoopType {
     use rustysynth::MidiFileLoopType;
     match arg {
@@ -1015,6 +1020,209 @@ fn render_fx(sf2_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
     });
     fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap())
         .expect("cannot write sidecar");
+    println!("wrote {wav_path} (peak {peak}) and {json_path}");
+    ExitCode::SUCCESS
+}
+
+/// Writes the committed Phase-3 reference song — DETERMINISTIC (pure
+/// constants): byte-identical on every run. SMF format 1, resolution 480.
+/// The absolute-tick event tables below are the normative source the Swift
+/// structural test's hand-derived expectations mirror (Task 5).
+///
+/// STREAM CONSTRAINTS (Channel-model divergence, as for MULTI_MESSAGES):
+/// no NRPN (CC 0x62/0x63); the single data entry (CC 0x06, pitch-bend
+/// range 4) is immediately preceded by the RPN select CC 0x65=0 / 0x64=0.
+fn make_midi(out_path: &str) -> ExitCode {
+    // Track 0 — conductor: tempo 120→150 bpm, one discarded text meta.
+    let mut t0 = TrackWriter::new();
+    t0.at(0, &[0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]); // tempo 500000 µs/qn (120 bpm)
+    t0.at(0, &[0xFF, 0x01, 0x0B, 0x73, 0x77, 0x69, 0x66, 0x74, 0x79, 0x73, 0x79, 0x6E, 0x74, 0x68]); // text "swiftysynth" (discarded)
+    t0.at(1920, &[0xFF, 0x51, 0x03, 0x06, 0x1A, 0x80]); // tempo 400000 µs/qn (150 bpm) @ t=2.0s
+    t0.at(4800, &[0xFF, 0x2F, 0x00]); // EOT @ t=4.4s
+
+    // Track 1 — ch0 piano: program 0, a SysEx (discarded), chords with
+    // RUNNING STATUS incl. vel-0 note-offs.
+    let mut t1 = TrackWriter::new();
+    t1.at(0, &[0xC0, 0x00]); // program 0 (Grand Piano)
+    t1.at(0, &[0xF0, 0x05, 0x7E, 0x7F, 0x09, 0x01, 0xF7]); // SysEx GM System On (discarded)
+    t1.at(0, &[0x90, 0x3C, 0x64]); // noteOn 60 vel 100
+    t1.at(0, &[0x40, 0x60]); //   running status: noteOn 64 vel 96
+    t1.at(900, &[0x3C, 0x00]); //  running status: noteOn 60 vel 0 == note-off
+    t1.at(900, &[0x40, 0x00]); //  running status: 64 off
+    t1.at(960, &[0x43, 0x60]); //  running status: noteOn 67 vel 96
+    t1.at(1880, &[0x43, 0x00]);
+    t1.at(1920, &[0x48, 0x64]); // noteOn 72 vel 100 (lands ON the tempo change)
+    t1.at(2880, &[0x48, 0x00]);
+    t1.at(3360, &[0x41, 0x5A]); // noteOn 65 vel 90
+    t1.at(4320, &[0x41, 0x00]);
+    t1.at(4320, &[0xFF, 0x2F, 0x00]); // EOT @ t=4.0s
+
+    // Track 2 — ch1 strings: program 48, CC volume/pan, RPN pitch-bend-range
+    // 4 + pitch bends, and the note-off AFTER the loop end (tick 5040) so the
+    // loop rewind's noteOffAll is what releases it while looping.
+    let mut t2 = TrackWriter::new();
+    t2.at(0, &[0xC1, 0x30]); // program 48 (String Ensemble 1)
+    t2.at(0, &[0xB1, 0x07, 0x64]); // CC7 channel volume 100
+    t2.at(0, &[0x0A, 0x1E]); //  running status: CC10 pan 30
+    t2.at(0, &[0x65, 0x00]); //  running status: CC101 RPN coarse 0
+    t2.at(0, &[0x64, 0x00]); //  running status: CC100 RPN fine 0 → RPN 0
+    t2.at(0, &[0x06, 0x04]); //  running status: CC6 data entry → bend range 4
+    t2.at(480, &[0x91, 0x37, 0x5A]); // noteOn 55 vel 90 @ t=0.5s
+    t2.at(1440, &[0xE1, 0x00, 0x50]); // pitch bend +1 semitone (range 4) @ t=1.5s
+    t2.at(2400, &[0xE1, 0x00, 0x40]); // bend back to center @ t=2.4s
+    t2.at(5040, &[0x81, 0x37, 0x00]); // noteOff 55 @ t=4.6s — AFTER the loop end
+    t2.at(5040, &[0xFF, 0x2F, 0x00]); // EOT @ t=4.6s
+
+    // Track 3 — ch9 percussion + the FinalFantasy loop CCs; the declared
+    // chunk length includes 4 junk bytes after the EOT (both parsers must
+    // skip them).
+    let mut t3 = TrackWriter::new();
+    t3.at(0, &[0x99, 0x24, 0x7F]); // kick 36 vel 127
+    t3.at(240, &[0x24, 0x00]); //  running status offs throughout
+    t3.at(480, &[0x2A, 0x64]); // closed hi-hat 42 vel 100
+    t3.at(720, &[0x2A, 0x00]);
+    t3.at(960, &[0xB9, 0x74, 0x00]); // CC116 — FF loop START @ t=1.0s
+    t3.at(960, &[0x99, 0x26, 0x6E]); // snare 38 vel 110
+    t3.at(1200, &[0x26, 0x00]);
+    t3.at(1920, &[0x24, 0x7F]); // kick (lands ON the tempo change)
+    t3.at(2160, &[0x24, 0x00]);
+    t3.at(2880, &[0x26, 0x6E]); // snare
+    t3.at(3120, &[0x26, 0x00]);
+    t3.at(4800, &[0xB9, 0x75, 0x00]); // CC117 — FF loop END @ t=4.4s
+    t3.at(4800, &[0xFF, 0x2F, 0x00]); // EOT
+    let t3_junk: &[u8] = &[0x00, 0xFF, 0x01, 0x00]; // "events after the EOT" — skipped
+
+    let mut smf = smf_header(1, 4, 480);
+    smf.extend_from_slice(&t0.finish(&[]));
+    smf.extend_from_slice(&t1.finish(&[]));
+    smf.extend_from_slice(&t2.finish(&[]));
+    smf.extend_from_slice(&t3.finish(t3_junk));
+
+    let sha = hex::encode(Sha256::digest(&smf));
+    fs::write(out_path, &smf).expect("cannot write mid");
+    println!("wrote {out_path} ({} bytes, sha256 {sha})", smf.len());
+    ExitCode::SUCCESS
+}
+
+/// The G-midi STRUCTURAL vector: the merged message list + exact f64 times,
+/// obtained through the Task-1 Debug tap (MidiFile's fields are pub(crate);
+/// the derived Debug impl is the public surface, frozen by the =1.3.6 pin).
+fn dump_midi(mid_path: &str, loop_type_arg: &str, out_path: &str) -> ExitCode {
+    use rustysynth::MidiFile;
+
+    let loop_type = parse_loop_type(loop_type_arg);
+    let mid_bytes = fs::read(mid_path).expect("cannot read mid");
+    let mid_sha = hex::encode(Sha256::digest(&mid_bytes));
+    let mut cursor = std::io::Cursor::new(mid_bytes);
+    let midi = MidiFile::new_with_loop_type(&mut cursor, loop_type).expect("cannot parse mid");
+
+    let debug = format!("{midi:?}");
+    let messages = parse_debug_messages(debug_section(&debug, "messages: ["));
+    let times = parse_debug_times(debug_section(&debug, "times: ["));
+    assert_eq!(messages.len(), times.len(), "debug tap: messages/times length mismatch");
+    assert_eq!(
+        *times.last().expect("empty midi file"),
+        midi.get_length(),
+        "debug tap self-check: last merged time must equal get_length() bit-exactly"
+    );
+
+    let messages_json: Vec<Value> = messages
+        .iter()
+        .zip(&times)
+        .map(|(m, t)| {
+            let mut obj = m.clone();
+            obj["time"] = json!(t);
+            obj
+        })
+        .collect();
+
+    let dump = json!({
+        "loopType": loop_type_arg,
+        "midiSha256": mid_sha,
+        "rustysynthVersion": RUSTYSYNTH_VERSION,
+        "length": midi.get_length(),
+        "messageCount": messages_json.len(),
+        "messages": messages_json,
+    });
+    fs::write(out_path, serde_json::to_string_pretty(&dump).unwrap()).expect("cannot write json");
+    println!("wrote {out_path} ({} messages)", messages_json.len());
+    ExitCode::SUCCESS
+}
+
+/// The G-midi E2E vector: the reference song rendered by the rustysynth
+/// MidiFileSequencer — loopType FinalFantasy, loop ON, 5.0 s (one full pass,
+/// the rewind at ~4.4 s incl. note_off_all on the still-held strings note,
+/// then the replayed loop region), with the multi-gm-fx settings envelope
+/// (block 64, EFFECTS ON, polyphony 64, master 0.5, speed 1.0).
+///
+/// ONE render call: the sequencer owns the internal block walk, so caller
+/// chunking cannot affect event placement — the Swift gate deliberately
+/// renders in 997-frame chunks to assert exactly that.
+fn render_midi(sf2_path: &str, mid_path: &str, wav_path: &str, json_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{MidiFile, MidiFileLoopType, MidiFileSequencer, Synthesizer, SynthesizerSettings};
+
+    let font_bytes = fs::read(sf2_path).expect("cannot read sf2");
+    let font_sha = hex::encode(Sha256::digest(&font_bytes));
+    let mut font_cursor = std::io::Cursor::new(font_bytes);
+    let font = Arc::new(SoundFont::new(&mut font_cursor).expect("cannot parse sf2"));
+
+    let mid_bytes = fs::read(mid_path).expect("cannot read mid");
+    let mid_sha = hex::encode(Sha256::digest(&mid_bytes));
+    let mut mid_cursor = std::io::Cursor::new(mid_bytes);
+    let midi = Arc::new(
+        MidiFile::new_with_loop_type(&mut mid_cursor, MidiFileLoopType::FinalFantasy)
+            .expect("cannot parse mid"),
+    );
+
+    let mut settings = SynthesizerSettings::new(44_100);
+    settings.block_size = 64;
+    settings.maximum_polyphony = 64;
+    settings.enable_reverb_and_chorus = true;
+    let mut synth = Synthesizer::new(&font, &settings).expect("cannot create synthesizer");
+    synth.set_master_volume(0.5);
+    let mut sequencer = MidiFileSequencer::new(synth);
+    sequencer.play(&midi, true);
+
+    const TOTAL_FRAMES: usize = 220_500; // 5.0 s
+    let mut left = vec![0.0f32; TOTAL_FRAMES];
+    let mut right = vec![0.0f32; TOTAL_FRAMES];
+    sequencer.render(&mut left, &mut right);
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: 44_100,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(wav_path, spec).expect("cannot create wav");
+    for i in 0..TOTAL_FRAMES {
+        writer.write_sample(left[i]).unwrap();
+        writer.write_sample(right[i]).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+
+    let sidecar = json!({
+        "sampleRate": 44_100,
+        "blockSize": 64,
+        "maximumPolyphony": 64,
+        "enableReverbAndChorus": true,
+        "masterVolume": 0.5,
+        "totalFrames": TOTAL_FRAMES,
+        "loop": true,
+        "loopType": "finalfantasy",
+        "speed": 1.0,
+        "rustysynthVersion": RUSTYSYNTH_VERSION,
+        "soundFontSha256": font_sha,
+        "midiSha256": mid_sha,
+    });
+    fs::write(json_path, serde_json::to_string_pretty(&sidecar).unwrap()).expect("cannot write sidecar");
     println!("wrote {wav_path} (peak {peak}) and {json_path}");
     ExitCode::SUCCESS
 }
