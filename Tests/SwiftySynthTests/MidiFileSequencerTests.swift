@@ -60,6 +60,31 @@ struct MidiFileSequencerTests {
             loopType: .finalFantasy)
     }
 
+    /// LoopStart-only song with NO LoopEnd: a note at t=0, an EOT at t=0.5,
+    /// and a loop point at tick 960 (t=1.0) that is PAST the track's last
+    /// tick (mirrors `loopPointInsertsALoopStartIntoTrackZero`'s "past the
+    /// end" case in MidiFileTests), so `MidiFile` APPENDS the injected
+    /// LoopStart after the EOT instead of inserting it earlier. That makes
+    /// the LoopStart the LAST message (`messages.count - 1`), which is
+    /// required — not merely convenient — for
+    /// `endOfListRewindResumesAtLoopIndexNotPlusOne` below to actually
+    /// discriminate `loopIndex` from `loopIndex + 1`: re-processing a
+    /// `.loopStart` message is a pure no-op (`loopIndex = msgIndex`,
+    /// already true by construction) that costs no simulated time, so for
+    /// any INTERIOR LoopStart the two candidate resume points converge to
+    /// identical downstream dispatches on the very next `processEvents`
+    /// call — there is nothing between them to observe. Only when
+    /// LoopStart is the final message does `+ 1` push `msgIndex` past
+    /// `messages.count`, which IS externally observable, via `isAtEnd`.
+    private static func loopStartOnlyAtEndSong() throws -> MidiFile {
+        try MidiFile(
+            data: SyntheticSMF.file(format: 0, resolution: 480, tracks: [[
+                (0, [0x90, 60, 100]),
+                (480, SyntheticSMF.endOfTrack),
+            ]]),
+            loopPoint: 960)
+    }
+
     @Test func isAtEndLifecycle() throws {
         let sequencer = MidiFileSequencer(synthesizer: try Self.makeSynthesizer())
         #expect(sequencer.isAtEnd, "true before play (C# EndOfSequence contract)")
@@ -151,6 +176,66 @@ struct MidiFileSequencerTests {
         #expect(!sequencer.isAtEnd, "never at end while looping")
         // 1420 blocks - the second rewind at block 1380 → clock ≈ 40·q.
         #expect(sequencer.position.seconds < 1.0, "position rewound to the loop region")
+    }
+
+    /// Covers the END-OF-LIST rewind — the `if msgIndex == count && loop`
+    /// block BELOW the while loop in `processEvents`, which resumes at
+    /// `loopIndex` with NO `+ 1`. This is distinct from
+    /// `loopRewindsAndRedispatches` above, which only exercises the
+    /// IN-LOOP `LoopEnd` rewind (which shares the while loop's
+    /// `msgIndex += 1` and so resumes at `loopIndex + 1`). See
+    /// `loopStartOnlyAtEndSong` for why the fixture puts LoopStart at the
+    /// very end of the message list — that shape is what makes the
+    /// `loopIndex` vs `loopIndex + 1` choice observable at all.
+    @Test func endOfListRewindResumesAtLoopIndexNotPlusOne() throws {
+        let sequencer = MidiFileSequencer(synthesizer: try Self.makeSynthesizer())
+        sequencer.play(try Self.loopStartOnlyAtEndSong(), loop: true)
+
+        var left = [Float](repeating: 0, count: 64)
+        var right = [Float](repeating: 0, count: 64)
+        // T=1.0 (the LoopStart, the file's last and only post-EOT message)
+        // dispatches at block 690 (frame 44_160, per the file-level
+        // frame-math comment). Render well past that so the natural
+        // end-of-list rewind — there is no LoopEnd in this file — has
+        // fired at least once.
+        for _ in 0..<720 {
+            seqRenderInto(sequencer, &left, &right, 0..<64)
+        }
+
+        // DISCRIMINATOR: messages.count == 3, and the LoopStart is index 2
+        // (loopStartOnlyAtEndSong's design). A buggy `msgIndex = loopIndex
+        // + 1` resume would collapse msgIndex to 3 == messages.count
+        // right here, so `isAtEnd` — documented as "never true while
+        // looping" — would wrongly read true. The correct
+        // `msgIndex = loopIndex` resume keeps msgIndex at 2 < 3, so
+        // isAtEnd stays false.
+        #expect(!sequencer.isAtEnd, "end-of-list rewind must resume at loopIndex, not loopIndex + 1")
+
+        // Steady state, not a one-shot race: since nothing follows the
+        // LoopStart, every subsequent block re-triggers the very same
+        // end-of-list rewind (currentTime is reset to times[loopIndex]
+        // every time, so it never advances past its own value), so the
+        // divergence persists for as long as playback continues rather
+        // than depending on exact frame alignment.
+        for _ in 0..<200 {
+            seqRenderInto(sequencer, &left, &right, 0..<64)
+            #expect(!sequencer.isAtEnd)
+        }
+
+        // Confirms noteOffAll(immediate: false) actually fired at the
+        // rewind: the t=0 note is on a continuously-looping sample (per
+        // makeSynthesizer's font), so it would sustain forever on its
+        // own, but by now several hundred milliseconds of (repeatedly
+        // re-triggered) release have elapsed at the SoundFontMath default
+        // 10 ms release floor, so the voice must have fully released.
+        #expect(sequencer.synthesizer.activeVoiceCount == 0, "noteOffAll(false) fired at the rewind and the voice finished release")
+
+        // The clock is pinned near the LoopStart's own time, never
+        // advancing beyond one block quantum past it: every
+        // processEvents call resets currentTime back to the same stored
+        // times[loopIndex] value, and render() then advances it by
+        // exactly one block (blockSize/sampleRate) before the next call.
+        #expect(abs(sequencer.position.seconds - 1.0) < 0.01)
     }
 
     @Test func positionTracksTheBlockClock() throws {
