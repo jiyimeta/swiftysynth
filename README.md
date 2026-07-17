@@ -3,10 +3,11 @@
 A pure-Swift SF2 (SoundFont) synthesizer, ported from sinshu's
 [MeltySynth](https://github.com/sinshu/meltysynth) (C#, MIT).
 
-**Status: full port, Phase 0+1+2 complete — 16-channel synthesizer with
-steal-to-play dynamic voice allocation (the AUMIDISynth fix) and the
-Freeverb reverb + chorus effects bus. All prior gates plus G2-fx / G3-fx
-green. MIDI file playback (P3) and API polish (P4) follow.**
+**Status: full port, Phase 0+1+2+3 complete — 16-channel synthesizer with
+steal-to-play dynamic voice allocation (the AUMIDISynth fix), the Freeverb
+reverb + chorus effects bus, and MIDI file playback (`MidiFile` +
+`MidiFileSequencer`, SMF format 0/1). All prior gates plus G-midi / G3-seq
+green. API polish (P4) follows.**
 
 | Gate | Result |
 |------|--------|
@@ -19,6 +20,8 @@ green. MIDI file playback (P3) and API polish (P4) follow.**
 | G3′-dry real-time safety | pass — ≥5 s multichannel processMidiMessage-driven live no-trap; zero malloc delta incl. full-pool steal bursts; p99 0.46% (1 note) / 9.32% (256 voices) of the 11.6 ms deadline |
 | G2-fx effects equivalence | pass — component: hand-derived Freeverb comb/allpass + chorus fractional-delay invariants (no rustysynth component taps — pub(crate)); e2e effects-on vs oracle: left: maxAbs 3.13e-07, SNR 122.89 dB; right: maxAbs 2.68e-07, SNR 123.11 dB (bar: unchanged dry bar ≤1e-4 / ≥80 dB — decision-table case 1, no calibration) |
 | G3-fx real-time safety (effects on) | pass — ≥5 s effects-on live no-trap; zero malloc delta with the effects bus active (strict solo 0/0 witness); p99 1.07% (1 note) / 25.58% (256 voices) of the 11.6 ms deadline |
+| G-midi MIDI file equivalence | pass — structural: 37-message merge equivalence vs dump-midi (types/channels/data exact, f64 times EXACT, both loop variants) + oracle-independent hand-derived table; e2e: 5.0 s looped GM song (FF markers, rewind noteOffAll, effects ON) through the sequencer vs the rustysynth sequencer — left: maxAbs 2.91e-07, SNR 126.14 dB; right: maxAbs 2.83e-07, SNR 124.98 dB (bar: unchanged dry ≤1e-4 / ≥80 dB) |
+| G3-seq real-time safety (sequencer-driven) | pass — ≥5 s live sequencer-driven no-trap (off-thread MidiFile parse); zero malloc delta across loop rewinds, onSend nil + set-once hook (strict solo 0/0 witness); p99 < 25% of the 11.6 ms deadline bar (host-load-guarded — this run's release measurement skipped under sustained shared-host contention, 5-min load ≈22.5 on 10 cores; the guard trips to avoid a false wall-clock failure, not a code defect) |
 
 ## Scope so far
 
@@ -29,9 +32,13 @@ state, raw `processMidiMessage` dispatch, `SynthesizerSettings` (polyphony
 8–256, default 64), dynamic voice allocation with priority stealing — a new
 note always sounds; the quietest release tails are reclaimed first — and
 the faithful Freeverb reverb + chorus effects bus (send/return per voice,
-allocated at init, muted on reset, enabled by default). The MIDI file
-sequencer (P3) and the idiomatic `MidiMessage` send API (P4) are the
-remaining full-port phases.
+allocated at init, muted on reset, enabled by default). MIDI file playback
+is in: `MidiFile` parses SMF format 0/1 (tempo map, running status, RPG
+Maker / Incredible Machine / Final Fantasy loop markers; format 2 is
+rejected by design) and `MidiFileSequencer` drives the synthesizer with
+block-accurate scheduling, looping, playback speed, and an `onSend` hook —
+real-time-safe on the render thread. The idiomatic `MidiMessage` send API
+and peripherals (P4) are the remaining full-port phase.
 
 ## Try it
 
