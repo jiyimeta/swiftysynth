@@ -4,9 +4,9 @@ import Foundation
 /// presets, and instruments.
 ///
 /// Ported from `SoundFontParameters.cs` (MeltySynth, MIT License — see
-/// NOTICE). Modulators (`pmod`/`imod`) are parsed-and-discarded — this
-/// spike's scope never surfaces modulator data, matching `Zone.swift`'s own
-/// scope decision (see `Zone.cs`/`Modulator.cs`).
+/// NOTICE). Modulators (`pmod`/`imod`) are size-validated and discarded by
+/// `Modulator.discardData` — the canonical parse-and-discard behavior this
+/// port mirrors (full-port spec §2; see `Modulator.swift`).
 final class SoundFontParameters {
     let sampleHeaders: [SampleHeader]
     let presets: [Preset]
@@ -55,7 +55,7 @@ final class SoundFontParameters {
             case "pbag":
                 presetBag = try ZoneInfo.create(reader: reader, size: chunkSize)
             case "pmod":
-                try SoundFontParameters.discardModulatorData(reader: reader, size: chunkSize)
+                try Modulator.discardData(reader: reader, size: chunkSize)
             case "pgen":
                 presetGenerators = try Generator.readFromChunk(reader: reader, size: chunkSize)
             case "inst":
@@ -63,7 +63,7 @@ final class SoundFontParameters {
             case "ibag":
                 instrumentBag = try ZoneInfo.create(reader: reader, size: chunkSize)
             case "imod":
-                try SoundFontParameters.discardModulatorData(reader: reader, size: chunkSize)
+                try Modulator.discardData(reader: reader, size: chunkSize)
             case "igen":
                 instrumentGenerators = try Generator.readFromChunk(reader: reader, size: chunkSize)
             case "shdr":
@@ -107,14 +107,5 @@ final class SoundFontParameters {
         self.sampleHeaders = sampleHeaders
         self.presets = presets
         self.instruments = instruments
-    }
-
-    /// Skips a `pmod`/`imod` sub-chunk without parsing it. Mirrors
-    /// `Modulator.DiscardData`: modulators are not supported by this port.
-    private static func discardModulatorData(reader: BinaryReader, size: Int) throws {
-        guard size % 10 == 0 else {
-            throw SwiftySynthError.invalidSoundFont("The modulator list is invalid.")
-        }
-        try reader.skip(size)
     }
 }
