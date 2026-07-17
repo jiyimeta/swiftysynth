@@ -45,21 +45,32 @@ struct BinaryReaderMidiTests {
 
     /// C# ReadIntVariableLength throws once a 5th byte would be needed:
     /// "The length of the value must be equal to or less than 4."
+    /// This is a structural SMF violation, not truncation, so it must be
+    /// pinned to `.invalidMidiFile` specifically — not merely `SwiftySynthError`.
     @Test func variableLengthQuantityOverFourBytesThrows() {
         let r = BinaryReader(data: Data([0x81, 0x81, 0x81, 0x81, 0x01]))
-        #expect(throws: SwiftySynthError.self) {
+        #expect {
             _ = try r.readIntVariableLength()
+        } throws: { error in
+            guard case SwiftySynthError.invalidMidiFile = error else { return false }
+            return true
         }
     }
 
     @Test func truncatedReadsThrowUnexpectedEndOfData() {
         let r = BinaryReader(data: Data([0x01]))
-        #expect(throws: SwiftySynthError.self) {
+        #expect {
             _ = try r.readInt16BigEndian()
+        } throws: { error in
+            guard case SwiftySynthError.unexpectedEndOfData = error else { return false }
+            return true
         }
         let r2 = BinaryReader(data: Data([0x81]))   // continuation bit, then EOF
-        #expect(throws: SwiftySynthError.self) {
+        #expect {
             _ = try r2.readIntVariableLength()
+        } throws: { error in
+            guard case SwiftySynthError.unexpectedEndOfData = error else { return false }
+            return true
         }
     }
 }
