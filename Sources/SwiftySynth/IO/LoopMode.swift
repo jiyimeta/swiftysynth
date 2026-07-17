@@ -1,5 +1,3 @@
-import Foundation
-
 /// Specifies how the synthesizer loops the sample.
 ///
 /// Ported from `LoopMode.cs` (MeltySynth, MIT License — see NOTICE). Raw

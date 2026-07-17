@@ -1,5 +1,3 @@
-import Foundation
-
 /// Combines a `PresetRegion` (relative offsets) with an `InstrumentRegion`
 /// (absolute values) into the final per-voice parameters.
 ///

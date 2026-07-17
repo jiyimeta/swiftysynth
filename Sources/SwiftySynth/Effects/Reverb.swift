@@ -1,5 +1,3 @@
-import Foundation
-
 /// Freeverb reverb: per stereo channel, 8 parallel feedback-comb filters
 /// summed into a series of 4 allpass filters; the right-channel banks are
 /// offset by `stereoSpread` samples.

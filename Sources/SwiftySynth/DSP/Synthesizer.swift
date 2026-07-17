@@ -1,5 +1,3 @@
-import Foundation
-
 /// The full 16-channel SoundFont synthesizer with the Freeverb reverb +
 /// chorus effects bus (allocated at init iff `enableReverbAndChorus`;
 /// rendering is fully dry — bit-identical to the pre-effects build — when

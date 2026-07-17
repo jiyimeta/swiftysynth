@@ -35,11 +35,14 @@ struct MidiFileStructuralTests {
     }
 
     /// Compares a Swift parse against a dump EXACTLY: count, per-message
-    /// type/channel/command/data1/data2, and bit-exact f64 times.
-    private func assertMatchesDump(_ midi: MidiFile, _ dump: MidiDump, songSha: String) {
+    /// type/channel/command/data1/data2, and bit-exact f64 times. The count
+    /// checks are #require: on a mismatch the loop below would index past
+    /// one of the arrays — abort the test cleanly instead of trapping.
+    private func assertMatchesDump(_ midi: MidiFile, _ dump: MidiDump, songSha: String) throws {
         #expect(dump.midiSha256 == songSha, "the dump was generated from different .mid bytes")
-        #expect(midi.messages.count == dump.messageCount)
-        #expect(midi.messages.count == dump.messages.count)
+        try #require(midi.messages.count == dump.messageCount)
+        try #require(midi.messages.count == dump.messages.count)
+        try #require(midi.times.count == midi.messages.count)
         for (i, expected) in dump.messages.enumerated() {
             let msg = midi.messages[i]
             switch expected.type {
@@ -77,7 +80,7 @@ struct MidiFileStructuralTests {
         let data = try Self.songData()
         let midi = try MidiFile(data: data, loopType: .finalFantasy)
         let dump = try Self.dump("midi-gm-dump-ff")
-        assertMatchesDump(midi, dump, songSha: sha256Hex(data))
+        try assertMatchesDump(midi, dump, songSha: sha256Hex(data))
         // The FF markers land at the hand-known indices.
         #expect(midi.messages[17].type == .loopStart)
         #expect(midi.messages[33].type == .loopEnd)
@@ -139,7 +142,7 @@ struct MidiFileStructuralTests {
 
     @Test func parseMatchesHandDerivedTable() throws {
         let midi = try MidiFile(data: Self.songData())
-        #expect(midi.messages.count == Self.expectedRows.count)
+        try #require(midi.messages.count == Self.expectedRows.count)
         for (i, row) in Self.expectedRows.enumerated() {
             let msg = midi.messages[i]
             #expect(msg.type == row.type, "index \(i)")

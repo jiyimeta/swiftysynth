@@ -1,5 +1,3 @@
-import Foundation
-
 /// Raw `pbag`/`ibag` sub-chunk record: generator/modulator start index plus
 /// the derived counts (the difference to the next record's start index).
 ///

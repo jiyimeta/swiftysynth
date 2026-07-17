@@ -1,5 +1,3 @@
-import Foundation
-
 /// Plays a `MidiFile` through a `Synthesizer`, dispatching due messages at
 /// the synthesizer's internal block boundaries.
 ///

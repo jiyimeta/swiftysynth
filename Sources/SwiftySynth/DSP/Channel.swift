@@ -1,5 +1,3 @@
-import Foundation
-
 /// Per-channel MIDI controller state: the full CC/RPN state machine plus the
 /// scaled property getters `Voice` reads every block.
 ///

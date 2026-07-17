@@ -1,5 +1,3 @@
-import Foundation
-
 /// Raw `inst` sub-chunk record: name plus the ibag start index, with the
 /// end index derived from the next record's start index.
 ///

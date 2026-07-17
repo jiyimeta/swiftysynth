@@ -1,5 +1,3 @@
-import Foundation
-
 /// DAHDSR (Delay, Attack, Hold, Decay, Sustain, Release) amplitude envelope
 /// applied per block to a voice.
 ///

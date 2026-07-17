@@ -1,5 +1,3 @@
-import Foundation
-
 /// Identifies a SoundFont generator parameter.
 ///
 /// Ported from `GeneratorType.cs` (MeltySynth, MIT License — see NOTICE).

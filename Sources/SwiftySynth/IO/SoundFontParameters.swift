@@ -1,5 +1,3 @@
-import Foundation
-
 /// The parameters of a SoundFont (the `LIST`/`pdta` chunk): sample headers,
 /// presets, and instruments.
 ///

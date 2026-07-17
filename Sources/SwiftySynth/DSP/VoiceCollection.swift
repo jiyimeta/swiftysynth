@@ -1,5 +1,3 @@
-import Foundation
-
 /// The dynamic voice pool: allocation, exclusive-class reuse, and — when the
 /// pool is full — priority-based stealing. This is the AUMIDISynth fix:
 /// `requestNew` NEVER fails, so a new note always gets a voice

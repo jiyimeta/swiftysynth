@@ -1,5 +1,3 @@
-import Foundation
-
 /// Numeric-critical helper for the effects-return mix
 /// (`block += masterVolume × effectsOutput`).
 ///

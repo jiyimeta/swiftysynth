@@ -1,5 +1,3 @@
-import Foundation
-
 /// Triangle low-frequency oscillator (delay + frequency), routed to
 /// pitch/filter/volume modulation by the voice.
 ///

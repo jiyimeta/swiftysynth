@@ -1,5 +1,3 @@
-import Foundation
-
 /// DAHDSR (Delay, Attack, Hold, Decay, Sustain, Release) modulation envelope,
 /// routed to pitch and filter cutoff (not amplitude) by the voice.
 ///

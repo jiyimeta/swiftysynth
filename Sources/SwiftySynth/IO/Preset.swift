@@ -1,5 +1,3 @@
-import Foundation
-
 /// Raw `phdr` sub-chunk record: name, patch/bank numbers, library/genre/
 /// morphology, plus the pbag start index, with the end index derived from
 /// the next record's start index.

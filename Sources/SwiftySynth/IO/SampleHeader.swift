@@ -1,5 +1,3 @@
-import Foundation
-
 /// Represents a sample in the SoundFont.
 ///
 /// Ported from `SampleHeader.cs` (MeltySynth, MIT License — see NOTICE). C#
