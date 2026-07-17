@@ -70,6 +70,46 @@ enum RenderBlockFactory {
         }
     }
 }
+
+/// Single-owner sequencer state handed to the audio render thread — the
+/// same @unchecked Sendable justification as RenderHarness: after
+/// engine.start() only the render thread touches the mutable fields, and
+/// the test thread reads them only after engine.stop().
+final class SequencerRenderHarness: @unchecked Sendable {
+    let sequencer: MidiFileSequencer
+    var framesRendered: Int64 = 0
+
+    init(sequencer: MidiFileSequencer) {
+        self.sequencer = sequencer
+    }
+}
+
+extension RenderBlockFactory {
+    /// Same `nonisolated static` rule as makeSourceNode: a render block
+    /// formed in a @MainActor context traps EXC_BREAKPOINT on the audio
+    /// thread. The sequencer is fully primed (MidiFile parsed, play()
+    /// called) BEFORE the engine starts — the callback only renders.
+    nonisolated static func makeSequencerSourceNode(harness: SequencerRenderHarness) -> AVAudioSourceNode {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        return AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList in
+            let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let frames = Int(frameCount)
+            guard abl.count >= 2,
+                  let rawLeft = abl[0].mData,
+                  let rawRight = abl[1].mData else {
+                return kAudioUnitErr_InvalidParameter
+            }
+            let left = UnsafeMutableBufferPointer(
+                start: rawLeft.assumingMemoryBound(to: Float.self), count: frames)
+            let right = UnsafeMutableBufferPointer(
+                start: rawRight.assumingMemoryBound(to: Float.self), count: frames)
+
+            harness.sequencer.render(left: left, right: right)
+            harness.framesRendered += Int64(frames)
+            return noErr
+        }
+    }
+}
 #endif
 
 @Suite(.serialized)
@@ -123,6 +163,40 @@ struct RealTimeSafetyTests {
                 "render thread ran for \(harness.framesRendered) frames; expected ≥ 5 s worth")
         #expect(harness.eventIndex == harness.events.count,
                 "all preplanned events must have fired on the render thread")
+    }
+
+    /// **G3-seq (no-trap)** — ≥5 s of live SEQUENCER-DRIVEN rendering on a
+    /// real AVAudioSourceNode render thread: the committed GM song, effects
+    /// ON, FinalFantasy loop markers, loop ON (the ≈3.4 s loop period puts
+    /// at least one rewind + noteOffAll inside the window). MidiFile parse
+    /// and play() happen HERE, off-thread, before the engine starts
+    /// (spec §8); the callback only calls sequencer.render. Surviving to
+    /// the assertions == zero traps.
+    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
+    func sequencerNoTrapOnRenderThread() throws {
+        let font = try SoundFont(url: FixtureSF2.url)
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: true)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
+        let midURL = try #require(Fixtures.url("midi-gm-song", "mid"))
+        let midi = try MidiFile(url: midURL, loopType: .finalFantasy)   // off-thread parse
+        let sequencer = MidiFileSequencer(synthesizer: synth)
+        sequencer.play(midi, loop: true)
+        let harness = SequencerRenderHarness(sequencer: sequencer)
+        let node = RenderBlockFactory.makeSequencerSourceNode(harness: harness)
+
+        let engine = AVAudioEngine()
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode,
+                       format: AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2))
+        engine.mainMixerNode.outputVolume = 0.0   // keep the test silent; the node is still pulled
+        try engine.start()
+        Thread.sleep(forTimeInterval: 5.5)
+        engine.stop()
+
+        #expect(harness.framesRendered >= Int64(5 * 44_100),
+                "render thread ran for \(harness.framesRendered) frames; expected ≥ 5 s worth")
+        #expect(!harness.sequencer.isAtEnd, "looping playback must still be live after 5 s")
     }
     #endif
 
@@ -222,6 +296,93 @@ struct RealTimeSafetyTests {
                 0/0 malloc-zone delta (the authoritative zero-alloc proof,
                 effectsOn=\(effectsOn)), but none of \(windows.count) windows \
                 were exactly zero. windows=\(windows).
+                """)
+        }
+    }
+
+    /// **G3-seq (zero-alloc)** — after warm-up, sequencer-driven rendering
+    /// of the committed GM song (effects ON, loop ON) allocates nothing:
+    /// each ~3.48 s measured window exceeds the ≈3.4 s loop period, so
+    /// every window contains at least one loop rewind (noteOffAll +
+    /// re-dispatch) alongside processEvents → processMidiMessage traffic.
+    /// Parameterized over the onSend hook: nil (direct dispatch) and a
+    /// SET-ONCE forwarding closure (spec §8 — invoking a stored closure
+    /// allocates nothing; the closure captures nothing per call).
+    /// Same bounded-retry design as zeroAllocationAfterWarmup (P1 Task 11);
+    /// the authoritative exact-0/0 proof is the isolated strict run:
+    ///   SWIFTYSYNTH_RT_STRICT=1 swift test --filter RealTimeSafetyTests.sequencerZeroAllocationAfterWarmup
+    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
+          arguments: [false, true])
+    func sequencerZeroAllocationAfterWarmup(useOnSendHook: Bool) throws {
+        let font = try SoundFont(url: FixtureSF2.url)
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: true)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
+        let midURL = try #require(Fixtures.url("midi-gm-song", "mid"))
+        let midi = try MidiFile(url: midURL, loopType: .finalFantasy)
+        let sequencer = MidiFileSequencer(synthesizer: synth)
+        if useOnSendHook {
+            // Set ONCE, forwards everything, captures no per-call state.
+            sequencer.onSend = { synthesizer, channel, command, data1, data2 in
+                synthesizer.processMidiMessage(
+                    channel: channel, command: command, data1: data1, data2: data2)
+            }
+        }
+        sequencer.play(midi, loop: true)
+
+        var left = [Float](repeating: 0, count: 512)
+        var right = [Float](repeating: 0, count: 512)
+
+        // Warm-up: ≥ 2 full loop passes (900 × 512 ≈ 10.4 s of song time)
+        // so the first-touch of every dispatch path — incl. two rewinds —
+        // is behind us.
+        for _ in 0..<900 { seqRenderInto(sequencer, &left, &right, 0..<512) }
+
+        // One ~300-render measured window (≈3.48 s > the 3.4 s loop
+        // period → contains a rewind), bracketed by process-global
+        // malloc-zone snapshots. NO print/log inside.
+        func measureWindow() -> (blocks: Int, size: Int) {
+            var before = malloc_statistics_t()
+            malloc_zone_statistics(malloc_default_zone(), &before)
+            for _ in 0..<300 {
+                seqRenderInto(sequencer, &left, &right, 0..<512)
+            }
+            var after = malloc_statistics_t()
+            malloc_zone_statistics(malloc_default_zone(), &after)
+            return (Int(after.blocks_in_use) - Int(before.blocks_in_use),
+                    Int(after.size_in_use) - Int(before.size_in_use))
+        }
+
+        var windows = [(blocks: Int, size: Int)]()
+        for _ in 0..<8 {
+            let delta = measureWindow()
+            windows.append(delta)
+            if delta.blocks <= 0 && delta.size <= 0 {
+                break   // a quiet/externally-freed window — render path added nothing
+            }
+            // Drain outside the next measured span.
+            for _ in 0..<50 { seqRenderInto(sequencer, &left, &right, 0..<512) }
+        }
+
+        let cleanWindow = windows.first { $0.blocks <= 0 && $0.size <= 0 }
+        let exactZeroWitness = windows.contains { $0.blocks == 0 && $0.size == 0 }
+        print("G3-seq-alloc[onSend=\(useOnSendHook)] windows=\(windows) exactZeroWitness=\(exactZeroWitness)")
+
+        #expect(cleanWindow != nil, """
+            every one of \(windows.count) measured windows netted a positive \
+            malloc-zone delta — the reproducible signature of a render-path \
+            allocation in the sequencer path (onSend=\(useOnSendHook)). \
+            windows=\(windows). Find the allocation (spec §8: processEvents, \
+            the hook invocation, and the rewind noteOffAll must be \
+            alloc-free); do not loosen the gate.
+            """)
+
+        if ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil {
+            #expect(exactZeroWitness, """
+                STRICT mode: expected at least one measured window with an \
+                exact 0/0 malloc-zone delta (the authoritative zero-alloc \
+                proof, onSend=\(useOnSendHook)), but none of \
+                \(windows.count) windows were exactly zero. windows=\(windows).
                 """)
         }
     }
@@ -333,6 +494,47 @@ struct RealTimeSafetyTests {
                 "1-note p99 \(p99OneNote) ns is ≥ 25% of the 11.6 ms deadline (effectsOn=\(effectsOn))")
         #expect(p99Saturated < 0.50 * deadlineNanos,
                 "256-voice p99 \(p99Saturated) ns is ≥ 50% of the 11.6 ms deadline (effectsOn=\(effectsOn))")
+    }
+
+    /// **G3-seq (CPU)** — per-callback cost of the SEQUENCER-DRIVEN path at
+    /// 512-frame buffers (deadline 11.61 ms @ 44.1 kHz): the committed GM
+    /// song is a light, 1-note-class load (a handful of simultaneous
+    /// voices), so it is held to the 25% bar. processEvents scanning +
+    /// dispatch ride on top of the synth cost measured by cpuBudget.
+    /// Release builds; host-load-guarded like cpuBudget.
+    @Test(
+        .enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
+        .enabled(if: TestEnv.isRelease, "CPU budget is measured in release builds (swift test -c release)"),
+        .disabled(if: isHostTooLoadedForCPUBudget(), hostLoadGuardSkipReason())
+    )
+    func sequencerCpuBudget() throws {
+        let deadlineNanos = 512.0 / 44_100.0 * 1e9   // ≈ 11_609_977 ns
+        let font = try SoundFont(url: FixtureSF2.url)
+        let settings = try SynthesizerSettings(
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: true)
+        let synth = try Synthesizer(soundFont: font, settings: settings)
+        let midURL = try #require(Fixtures.url("midi-gm-song", "mid"))
+        let midi = try MidiFile(url: midURL, loopType: .finalFantasy)
+        let sequencer = MidiFileSequencer(synthesizer: synth)
+        sequencer.play(midi, loop: true)
+
+        var left = [Float](repeating: 0, count: 512)
+        var right = [Float](repeating: 0, count: 512)
+        for _ in 0..<100 { seqRenderInto(sequencer, &left, &right, 0..<512) }   // warm-up
+
+        var samples = [UInt64]()
+        samples.reserveCapacity(1_000)
+        for _ in 0..<1_000 {
+            let t0 = mach_absolute_time()
+            seqRenderInto(sequencer, &left, &right, 0..<512)
+            samples.append(MachTime.toNanos(mach_absolute_time() - t0))
+        }
+        let p99 = Double(percentile(0.99, of: samples))
+
+        print("G3-seq-cpu: deadline=\(deadlineNanos)ns  p99=\(p99)ns (\(100 * p99 / deadlineNanos)%)")
+
+        #expect(p99 < 0.25 * deadlineNanos,
+                "sequencer-driven p99 \(p99) ns is ≥ 25% of the 11.6 ms deadline")
     }
 }
 
