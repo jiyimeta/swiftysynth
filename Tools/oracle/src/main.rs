@@ -21,12 +21,14 @@ fn main() -> ExitCode {
         Some("probe") if args.len() == 3 => probe(&args[2]),
         Some("render-multi") if args.len() == 5 => render_multi(&args[2], &args[3], &args[4]),
         Some("render-fx") if args.len() == 5 => render_fx(&args[2], &args[3], &args[4]),
+        Some("probe-midi") if args.len() == 3 => probe_midi(&args[2]),
         _ => {
             eprintln!("usage: oracle dump-font <sf2> <out.json>");
             eprintln!("       oracle render-note <sf2> <out.wav> <out.json>");
             eprintln!("       oracle probe <sf2>");
             eprintln!("       oracle render-multi <sf2> <out.wav> <out.json>");
             eprintln!("       oracle render-fx <sf2> <out.wav> <out.json>");
+            eprintln!("       oracle probe-midi <sf2>");
             ExitCode::FAILURE
         }
     }
@@ -36,6 +38,166 @@ fn load_font(sf2_path: &str) -> SoundFont {
     let file = File::open(sf2_path).expect("cannot open sf2");
     let mut reader = BufReader::new(file);
     SoundFont::new(&mut reader).expect("cannot parse sf2")
+}
+
+/// Builds one SMF MTrk chunk from absolute-tick events (deltas + VLQ encoded
+/// here, so the event tables in this file read as absolute time).
+struct TrackWriter {
+    data: Vec<u8>,
+    last_tick: u32,
+}
+
+impl TrackWriter {
+    fn new() -> Self {
+        Self { data: Vec::new(), last_tick: 0 }
+    }
+
+    /// MIDI variable-length quantity: MSB-first, 7 data bits per byte,
+    /// high bit = continuation.
+    fn vlq(&mut self, mut value: u32) {
+        assert!(value <= 0x0FFF_FFFF);
+        let mut chunks = [0u8; 4];
+        let mut n = 0;
+        loop {
+            chunks[n] = (value & 0x7F) as u8;
+            value >>= 7;
+            n += 1;
+            if value == 0 {
+                break;
+            }
+        }
+        for i in (0..n).rev() {
+            let mut b = chunks[i];
+            if i > 0 {
+                b |= 0x80;
+            }
+            self.data.push(b);
+        }
+    }
+
+    /// Appends one event at an absolute tick. `bytes` are the raw event
+    /// bytes AFTER the delta — omitting the status byte yields running status.
+    fn at(&mut self, tick: u32, bytes: &[u8]) {
+        assert!(tick >= self.last_tick, "events must be tick-ordered");
+        self.vlq(tick - self.last_tick);
+        self.last_tick = tick;
+        self.data.extend_from_slice(bytes);
+    }
+
+    /// Wraps the accumulated events in an MTrk chunk. `trailing_junk` bytes
+    /// are counted in the declared chunk length but sit AFTER the end-of-track
+    /// meta event — the "events inserted after the EOT" case both parsers
+    /// must skip.
+    fn finish(self, trailing_junk: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"MTrk");
+        out.extend_from_slice(&((self.data.len() + trailing_junk.len()) as u32).to_be_bytes());
+        out.extend_from_slice(&self.data);
+        out.extend_from_slice(trailing_junk);
+        out
+    }
+}
+
+/// SMF header chunk: MThd, size 6, format / track count / resolution.
+fn smf_header(format: u16, tracks: u16, resolution: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"MThd");
+    out.extend_from_slice(&6u32.to_be_bytes());
+    out.extend_from_slice(&format.to_be_bytes());
+    out.extend_from_slice(&tracks.to_be_bytes());
+    out.extend_from_slice(&resolution.to_be_bytes());
+    out
+}
+
+/// Extracts the inner text of `key … ]` from a Debug string, starting right
+/// after `key` (pass keys ending in `[`). Safe because the merged message
+/// list never contains `]` (TempoChange, whose Debug form has a byte array,
+/// is consumed by merge_tracks and never appears in the merged output).
+fn debug_section<'a>(debug: &'a str, key: &str) -> &'a str {
+    let start = debug
+        .find(key)
+        .unwrap_or_else(|| panic!("debug tap: '{key}' not found — rustysynth Debug format changed?"))
+        + key.len();
+    let rest = &debug[start..];
+    let end = rest.find(']').expect("debug tap: unterminated list");
+    &rest[..end]
+}
+
+/// Parses a decimal run; returns (value, remainder).
+fn split_num(s: &str) -> (u32, &str) {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    (
+        s[..end].parse().expect("debug tap: expected a number"),
+        &s[end..],
+    )
+}
+
+/// Parses the Debug form of the merged message list into the dump-midi JSON
+/// message objects (without times — zipped in later). The status byte is
+/// split into channel/command here so the JSON is directly comparable to the
+/// Swift model.
+fn parse_debug_messages(section: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut s = section.trim();
+    loop {
+        s = s.trim_start_matches(',').trim_start();
+        if s.is_empty() {
+            break;
+        }
+        if let Some(rest) = s.strip_prefix("Normal { status: ") {
+            let (status, rest) = split_num(rest);
+            let rest = rest.strip_prefix(", data1: ").expect("debug tap: data1");
+            let (data1, rest) = split_num(rest);
+            let rest = rest.strip_prefix(", data2: ").expect("debug tap: data2");
+            let (data2, rest) = split_num(rest);
+            s = rest.strip_prefix(" }").expect("debug tap: closing brace");
+            out.push(json!({
+                "type": "normal",
+                "channel": status & 0x0F,
+                "command": status & 0xF0,
+                "data1": data1,
+                "data2": data2,
+            }));
+        } else if let Some(rest) = s.strip_prefix("LoopStart") {
+            out.push(json!({ "type": "loopStart" }));
+            s = rest;
+        } else if let Some(rest) = s.strip_prefix("LoopEnd") {
+            out.push(json!({ "type": "loopEnd" }));
+            s = rest;
+        } else if let Some(rest) = s.strip_prefix("EndOfTrack") {
+            out.push(json!({ "type": "endOfTrack" }));
+            s = rest;
+        } else {
+            panic!("debug tap: unrecognized message entry at: {s}");
+        }
+    }
+    out
+}
+
+/// Parses the Debug form of the times list. Rust's f64 Debug prints the
+/// shortest decimal that round-trips to the exact bit pattern, and
+/// str::parse::<f64> is correctly rounded — so these ARE the oracle's exact
+/// f64 values.
+fn parse_debug_times(section: &str) -> Vec<f64> {
+    section
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>().expect("debug tap: bad f64"))
+        .collect()
+}
+
+/// CLI loop-type names shared by dump-midi and the fixtures' provenance.
+#[allow(dead_code)] // consumed by Task 2's dump-midi / render-midi loop-type arg
+fn parse_loop_type(arg: &str) -> rustysynth::MidiFileLoopType {
+    use rustysynth::MidiFileLoopType;
+    match arg {
+        "none" => MidiFileLoopType::LoopPoint(0),
+        "rpgmaker" => MidiFileLoopType::RpgMaker,
+        "incrediblemachine" => MidiFileLoopType::IncredibleMachine,
+        "finalfantasy" => MidiFileLoopType::FinalFantasy,
+        _ => panic!("unknown loop type '{arg}' (none|rpgmaker|incrediblemachine|finalfantasy)"),
+    }
 }
 
 /// Canonical loop-mode code shared with the Swift tests:
@@ -462,6 +624,106 @@ fn probe(sf2_path: &str) -> ExitCode {
             "sequencerEndOfSequence": end_of_sequence,
             "reverbChorusComponentTaps":
                 "UNAVAILABLE — pub(crate) in rustysynth 1.3.6; P2 planning input, not a P1 blocker",
+            "rustysynthVersion": RUSTYSYNTH_VERSION,
+        }))
+        .unwrap()
+    );
+    ExitCode::SUCCESS
+}
+
+/// Phase-3 de-risk (full-port spec §7 "Phase 0 de-risk", the spike/P0
+/// pattern): validates, BEFORE any Swift coding, that rustysynth 1.3.6 can
+/// serve both G-midi legs.
+///   (a) STRUCTURAL: MidiFile.messages/times are pub(crate) — the tap goes
+///       through the derived Debug impl (public surface, format frozen by
+///       the =1.3.6 pin). This probe round-trips an in-memory SMF through
+///       MidiFile::new_with_loop_type + the Debug parser and checks the
+///       result against hand-known values.
+///   (b) E2E: MidiFileSequencer (pub, per the P0 probe) renders that SMF
+///       to PCM through the real font.
+/// STOP RULE: if any assertion here fails, or the Debug output lacks the
+/// messages/times lists, REPORT to the user via the orchestrator before
+/// building anything else — do NOT substitute the f64 py-meltysynth as a
+/// tolerance oracle, and do NOT hand-roll a substitute parser silently.
+fn probe_midi(sf2_path: &str) -> ExitCode {
+    use std::sync::Arc;
+
+    use rustysynth::{MidiFile, MidiFileLoopType, MidiFileSequencer, Synthesizer, SynthesizerSettings};
+
+    // In-memory two-track SMF, format 1, resolution 480, default 120 bpm:
+    //   track 0: tempo 500000 @0, EOT @960
+    //   track 1: noteOn 60 @0; CC116 @480 (FF loop start); CC117 @960 (FF
+    //            loop end); noteOff 60 @960; EOT @960
+    // Merged under FinalFantasy (tempo consumed; track 0 scanned first at
+    // equal ticks): [Normal 0x90, LoopStart, EndOfTrack, LoopEnd,
+    // Normal 0x80, EndOfTrack] with times [0.0, 0.5, 1.0, 1.0, 1.0, 1.0].
+    let mut t0 = TrackWriter::new();
+    t0.at(0, &[0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]); // tempo 500000 µs/qn
+    t0.at(960, &[0xFF, 0x2F, 0x00]);
+    let mut t1 = TrackWriter::new();
+    t1.at(0, &[0x90, 0x3C, 0x64]);
+    t1.at(480, &[0xB0, 0x74, 0x00]); // CC 116
+    t1.at(960, &[0xB0, 0x75, 0x00]); // CC 117
+    t1.at(960, &[0x80, 0x3C, 0x40]);
+    t1.at(960, &[0xFF, 0x2F, 0x00]);
+    let mut smf = smf_header(1, 2, 480);
+    smf.extend_from_slice(&t0.finish(&[]));
+    smf.extend_from_slice(&t1.finish(&[]));
+
+    let mut cursor = std::io::Cursor::new(smf);
+    let midi = MidiFile::new_with_loop_type(&mut cursor, MidiFileLoopType::FinalFantasy)
+        .expect("probe: rustysynth failed to parse the in-memory SMF");
+    let length = midi.get_length(); // capture before `midi` is moved into the sequencer's Arc
+
+    // (a) The Debug tap, end to end.
+    let debug = format!("{midi:?}");
+    let messages = parse_debug_messages(debug_section(&debug, "messages: ["));
+    let times = parse_debug_times(debug_section(&debug, "times: ["));
+    assert_eq!(messages.len(), 6, "probe: expected 6 merged messages, got {}", messages.len());
+    assert_eq!(times.len(), 6, "probe: messages/times must be parallel");
+    assert_eq!(messages[0]["type"], "normal");
+    assert_eq!(messages[0]["command"], 0x90);
+    assert_eq!(messages[1]["type"], "loopStart");
+    assert_eq!(messages[2]["type"], "endOfTrack");
+    assert_eq!(messages[3]["type"], "loopEnd");
+    assert_eq!(messages[4]["command"], 0x80);
+    assert_eq!(messages[5]["type"], "endOfTrack");
+    assert_eq!(times[0], 0.0);
+    assert_eq!(
+        *times.last().unwrap(),
+        length,
+        "probe: Debug-tapped last time must equal get_length() bit-exactly"
+    );
+
+    // (b) The sequencer e2e leg: render 1 s of the probe song, loop on.
+    let font = Arc::new(load_font(sf2_path));
+    let mut settings = SynthesizerSettings::new(44_100);
+    settings.block_size = 64;
+    settings.maximum_polyphony = 64;
+    settings.enable_reverb_and_chorus = true;
+    let synth = Synthesizer::new(&font, &settings).expect("probe: cannot create synthesizer");
+    let mut sequencer = MidiFileSequencer::new(synth);
+    sequencer.play(&Arc::new(midi), true);
+    let mut left = vec![0.0f32; 44_100];
+    let mut right = vec![0.0f32; 44_100];
+    sequencer.render(&mut left, &mut right);
+    let peak = left
+        .iter()
+        .chain(right.iter())
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(peak > 0.0, "probe: sequencer render produced silence");
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "midiFileParsePublic": true,
+            "structuralFields": "messages/times are pub(crate) — tapped via the derived Debug impl (public surface, frozen by the =1.3.6 pin)",
+            "debugTapMessageCount": messages.len(),
+            "debugTapTimes": times,
+            "loopMarkersViaDebugTap": true,
+            "lengthSeconds": length,
+            "sequencerRenderPeak": peak,
+            "renderMidiExpressible": true,
             "rustysynthVersion": RUSTYSYNTH_VERSION,
         }))
         .unwrap()
