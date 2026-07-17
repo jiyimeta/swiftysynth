@@ -94,7 +94,10 @@ public final class MidiFileSequencer {
     /// Mirrors `MidiFileSequencer.ProcessEvents` exactly — including the
     /// shared `msgIndex += 1` that makes a loop rewind resume at
     /// `loopIndex + 1`, and the end-of-list rewind (no `+ 1`) below the
-    /// while loop.
+    /// while loop. Both rewind sites carry an added `loopIndex <
+    /// times.count` guard with no C# equivalent: `Times[loopIndex]` on an
+    /// empty array throws a catchable exception in C#, but Swift's Array
+    /// subscript hard-traps — never-trap applies.
     private func processEvents() {
         guard let midiFile else { return }
 
@@ -113,7 +116,12 @@ public final class MidiFileSequencer {
                 } else if loop {
                     if msg.type == .loopStart {
                         loopIndex = msgIndex
-                    } else if msg.type == .loopEnd {
+                    } else if msg.type == .loopEnd, loopIndex < midiFile.times.count {
+                        // `loopIndex < times.count` is defense-in-depth: the
+                        // parser now rejects `trackCount == 0` (the only way
+                        // an empty `times` could reach here), but this keeps
+                        // the rewind from Array-subscript-trapping on any
+                        // other empty-`times` MidiFile — never-trap.
                         currentTime = midiFile.times[loopIndex]
                         msgIndex = loopIndex
                         synthesizer.noteOffAll(immediate: false)
@@ -125,15 +133,23 @@ public final class MidiFileSequencer {
             }
         }
 
-        if msgIndex == midiFile.messages.count && loop {
+        if msgIndex == midiFile.messages.count && loop && loopIndex < midiFile.times.count {
+            // Same defense-in-depth guard as above, for the end-of-list
+            // rewind.
             currentTime = midiFile.times[loopIndex]
             msgIndex = loopIndex
             synthesizer.noteOffAll(immediate: false)
         }
     }
 
-    /// The current playback position.
-    public var position: Duration { Duration.seconds(currentTime) }
+    /// The current playback position. `.zero` if `currentTime` is
+    /// non-finite (defense in depth at the `Duration` boundary — mirrors
+    /// the guard on `MidiFile.length`; `currentTime` is seeded from
+    /// `midiFile.times`, so a non-finite value here would trace back to a
+    /// non-finite time that should already have been rejected at parse).
+    public var position: Duration {
+        currentTime.isFinite ? .seconds(currentTime) : .zero
+    }
 
     /// Whether playback has consumed every message (C# `EndOfSequence`):
     /// `true` before `play` and after `stop`; index-based, so release tails

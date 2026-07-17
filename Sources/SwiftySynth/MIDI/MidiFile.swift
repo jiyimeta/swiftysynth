@@ -71,7 +71,26 @@ public final class MidiFile {
             throw SwiftySynthError.invalidMidiFile("The format \(format) is not supported.")
         }
         let trackCount = Int(try reader.readInt16BigEndian())
+        // A format-0/1 file with zero tracks is malformed: rustysynth's
+        // `merge_tracks` would run its outer loop zero times and produce an
+        // EMPTY `messages`/`times`. The C# reference indexes `Times[0]` on
+        // that (a catchable IndexOutOfRangeException); Swift's Array
+        // subscript traps instead, so this is rejected here rather than
+        // left for the sequencer to hit later (never-trap).
+        guard trackCount > 0 else {
+            throw SwiftySynthError.invalidMidiFile("The MIDI file has no track.")
+        }
         let resolution = Int(try reader.readInt16BigEndian())
+        // resolution == 0 makes `mergeTracks`'s `60.0 / (Double(resolution)
+        // * tempo)` divide by zero, filling `times` with non-finite values
+        // that later trap at the `Duration` boundary (`length`). The
+        // reference has no such guard and silently produces a garbage
+        // TimeSpan; reject here instead (never-trap). A NEGATIVE resolution
+        // (SMPTE, high bit set) is NOT rejected — it still yields finite
+        // seconds-per-tick, so it parses exactly as the reference does.
+        guard resolution != 0 else {
+            throw SwiftySynthError.invalidMidiFile("The resolution must be a nonzero value.")
+        }
 
         var messageLists: [[Message]] = []
         var tickLists: [[Int32]] = []
@@ -106,9 +125,15 @@ public final class MidiFile {
     }
 
     /// The length of the MIDI file. `.zero` for a file with no events
-    /// (where the C# property would throw — never-trap applies).
+    /// (where the C# property would throw — never-trap applies), and also
+    /// `.zero` if the last accumulated time is non-finite (defense in
+    /// depth: the parse-time `resolution != 0` guard above already
+    /// prevents this, but this closes the `Duration.seconds` boundary
+    /// against any other non-finite value that might slip through, e.g. an
+    /// all-zero tempo payload driving `tempo` to `+Inf`).
     public var length: Duration {
-        times.last.map { Duration.seconds($0) } ?? .zero
+        guard let last = times.last, last.isFinite else { return .zero }
+        return .seconds(last)
     }
 
     /// Mirrors `MidiFile.ReadTrack` — including which paths update the

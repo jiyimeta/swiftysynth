@@ -240,6 +240,87 @@ struct MidiFileTests {
     @Test func emptyDataThrows() {
         #expect(throws: SwiftySynthError.self) { _ = try MidiFile(data: Data()) }
     }
+
+    // MARK: Degenerate headers — never trap (Swift-specific f64→Duration/array boundary)
+
+    /// A header-valid `MThd` (size 6, format 0/1) with division field
+    /// `0x0000` passes every OTHER parse guard: `mergeTracks`'s
+    /// `60.0 / (Double(resolution) * tempo) * deltaTick` becomes `Inf`/`NaN`
+    /// for `resolution == 0`, filling `times` with non-finite values that
+    /// later hard-trap `Duration.seconds(...)` in `MidiFile.length`. This
+    /// must be rejected at parse instead. Discriminates: with the
+    /// `resolution != 0` guard removed, this file parses successfully (no
+    /// throw) and `midi.length` fatalErrors instead of failing the
+    /// assertion — verified by temporarily removing the guard and observing
+    /// the process crash.
+    @Test func resolutionZeroThrows() {
+        let data = SyntheticSMF.file(format: 0, resolution: 0, tracks: [[
+            (0, [0x90, 0x3C, 0x64]),
+            (480, [0x80, 0x3C, 0x00]),
+            (0, SyntheticSMF.endOfTrack),
+        ]])
+        do {
+            _ = try MidiFile(data: data)
+            Issue.record("resolution == 0 must be rejected — it drives mergeTracks to divide by zero")
+        } catch let error as SwiftySynthError {
+            guard case .invalidMidiFile = error else {
+                Issue.record("expected .invalidMidiFile, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("unexpected error type: \(error)")
+        }
+    }
+
+    /// A NEGATIVE resolution (SMPTE time division: the division field's
+    /// high bit set) must NOT be rejected — the port keeps SMPTE division
+    /// as "parsed as a plain resolution, garbage-in-garbage-out, no trap"
+    /// (unlike `resolution == 0`, a negative resolution yields a finite
+    /// — negative — seconds-per-tick, so `Duration.seconds` never sees a
+    /// non-finite value). `0x8050` as big-endian `Int16` is `-32688`.
+    /// Discriminates against a too-broad fix (e.g. `resolution > 0`): that
+    /// would throw here where the reference — and this file's contract —
+    /// requires a successful, non-trapping parse.
+    @Test func negativeResolutionSMPTEStillParsesWithoutTrapping() throws {
+        let data = SyntheticSMF.file(format: 0, resolution: 0x8050, tracks: [[
+            (0, [0x90, 0x3C, 0x64]),
+            (480, [0x80, 0x3C, 0x00]),
+            (0, SyntheticSMF.endOfTrack),
+        ]])
+        let midi = try MidiFile(data: data)
+        #expect(midi.times.allSatisfy { $0.isFinite })
+        let length = midi.length   // must not trap
+        #expect(length.seconds.isFinite)
+    }
+
+    /// A well-formed `MThd` declaring `ntrks == 0` (format 0 or 1, any
+    /// resolution) parses to an EMPTY `messages`/`times` — `mergeTracks`'s
+    /// outer loop never has a track to pull from. Feeding that into
+    /// `MidiFileSequencer.play(loop: true)` + `render` hits
+    /// `msgIndex == messages.count && loop` (`0 == 0 && true`) on the very
+    /// first call, rewinding to `times[loopIndex]` on an empty array —
+    /// Swift's Array subscript hard-traps where C#'s indexer would throw a
+    /// catchable exception. Rejecting `trackCount == 0` at parse (the
+    /// faithful primary fix) closes the only reachable path to that empty
+    /// state; `MidiFileSequencer`'s own `loopIndex < times.count` guards
+    /// are defense-in-depth for any other route to an empty-`times` file.
+    /// Discriminates: with the `trackCount > 0` guard removed, this parses
+    /// successfully instead of throwing.
+    @Test func trackCountZeroThrows() {
+        var out = ByteWriter()
+        out.fourCC("MThd"); out.u32be(6); out.u16be(0); out.u16be(0); out.u16be(480)
+        do {
+            _ = try MidiFile(data: out.data)
+            Issue.record("trackCount == 0 must be rejected — it yields an empty MidiFile that later traps the sequencer's loop rewind")
+        } catch let error as SwiftySynthError {
+            guard case .invalidMidiFile = error else {
+                Issue.record("expected .invalidMidiFile, got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("unexpected error type: \(error)")
+        }
+    }
 }
 
 extension Duration {
