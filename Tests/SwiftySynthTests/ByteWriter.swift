@@ -1,6 +1,7 @@
 import Foundation
 
-/// Builds little-endian synthetic byte blobs for parser tests.
+/// Builds synthetic byte blobs (little-endian RIFF words plus the
+/// big-endian/VLQ words SMF tests need) for parser tests.
 struct ByteWriter {
     private(set) var data = Data()
 
@@ -16,6 +17,27 @@ struct ByteWriter {
         u16(UInt16(v >> 16))
     }
     mutating func i32(_ v: Int32) { u32(UInt32(bitPattern: v)) }
+    mutating func u16be(_ v: UInt16) {
+        data.append(UInt8(v >> 8))
+        data.append(UInt8(v & 0xFF))
+    }
+    mutating func u32be(_ v: UInt32) {
+        u16be(UInt16(v >> 16))
+        u16be(UInt16(v & 0xFFFF))
+    }
+    /// MIDI variable-length quantity (MSB-first, 7 data bits per byte).
+    mutating func vlq(_ v: UInt32) {
+        precondition(v <= 0x0FFF_FFFF)
+        var chunks = [v & 0x7F]
+        var rest = v >> 7
+        while rest > 0 {
+            chunks.append(rest & 0x7F)
+            rest >>= 7
+        }
+        for (i, chunk) in chunks.enumerated().reversed() {
+            data.append(UInt8(chunk) | (i > 0 ? 0x80 : 0))
+        }
+    }
     mutating func fourCC(_ s: String) {
         precondition(s.utf8.count == 4)
         data.append(contentsOf: s.utf8)

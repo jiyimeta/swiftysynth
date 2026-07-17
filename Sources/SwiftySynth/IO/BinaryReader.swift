@@ -5,12 +5,14 @@ import Foundation
 /// A malformed font (or an out-of-range setting) must never trap the host
 /// app: every out-of-bounds read (the Swift analogue of .NET's
 /// `EndOfStreamException`) is reported as `.unexpectedEndOfData`, structural
-/// violations as `.invalidSoundFont`, and settings-range violations (C#'s
-/// `ArgumentOutOfRangeException`) as `.invalidSettings`.
+/// violations as `.invalidSoundFont`, settings-range violations (C#'s
+/// `ArgumentOutOfRangeException`) as `.invalidSettings`, and structural SMF
+/// violations as `.invalidMidiFile`.
 public enum SwiftySynthError: Error, CustomStringConvertible {
     case unexpectedEndOfData
     case invalidSoundFont(String)
     case invalidSettings(String)
+    case invalidMidiFile(String)
 
     public var description: String {
         switch self {
@@ -19,6 +21,8 @@ public enum SwiftySynthError: Error, CustomStringConvertible {
         case .invalidSoundFont(let message):
             return message
         case .invalidSettings(let message):
+            return message
+        case .invalidMidiFile(let message):
             return message
         }
     }
@@ -82,6 +86,44 @@ final class BinaryReader {
 
     func readInt32() throws -> Int32 {
         Int32(bitPattern: try readUInt32())
+    }
+
+    /// Big-endian, mirroring `BinaryReaderEx.ReadInt16BigEndian`.
+    func readInt16BigEndian() throws -> Int16 {
+        let b0 = try readUInt8()
+        let b1 = try readUInt8()
+        return Int16(bitPattern: (UInt16(b0) << 8) | UInt16(b1))
+    }
+
+    /// Big-endian, mirroring `BinaryReaderEx.ReadInt32BigEndian`.
+    func readInt32BigEndian() throws -> Int32 {
+        let b0 = try readUInt8()
+        let b1 = try readUInt8()
+        let b2 = try readUInt8()
+        let b3 = try readUInt8()
+        return Int32(bitPattern: (UInt32(b0) << 24) | (UInt32(b1) << 16) | (UInt32(b2) << 8) | UInt32(b3))
+    }
+
+    /// MIDI variable-length quantity, mirroring
+    /// `BinaryReaderEx.ReadIntVariableLength`: 7 data bits per byte,
+    /// high bit = continuation, at most 4 bytes (so the result fits in
+    /// 28 bits and the shift below cannot overflow).
+    func readIntVariableLength() throws -> Int32 {
+        var acc: Int32 = 0
+        var count = 0
+        while true {
+            let value = try readUInt8()
+            acc = (acc << 7) | Int32(value & 127)
+            if (value & 128) == 0 {
+                break
+            }
+            count += 1
+            if count == 4 {
+                throw SwiftySynthError.invalidMidiFile(
+                    "The length of the value must be equal to or less than 4.")
+            }
+        }
+        return acc
     }
 
     /// Decodes ASCII bytes the way .NET's `Encoding.ASCII.GetString` does:
