@@ -138,7 +138,8 @@ public final class Synthesizer {
 
     /// Processes a raw MIDI message — the FAITHFUL dispatch path
     /// (`Synthesizer.cs ProcessMidiMessage`, byte-value for byte-value); the
-    /// idiomatic `MidiMessage` enum wrapper is layered on top in Phase 4.
+    /// idiomatic `MidiMessage` wrapper (`send(_:to:)`, `MidiMessage.swift`)
+    /// layers on top of this path.
     ///
     /// Deliberately unhandled, matching canonical C#: NRPN (CC 0x62/0x63) —
     /// rustysynth diverges here (it gates data entry on an RPN/NRPN flag), so
