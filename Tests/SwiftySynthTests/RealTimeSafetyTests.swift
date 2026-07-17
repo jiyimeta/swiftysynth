@@ -74,19 +74,25 @@ enum RenderBlockFactory {
 @Suite(.serialized)
 struct RealTimeSafetyTests {
     #if os(macOS)
-    /// **G3′-dry (no-trap)** — ≥5 s of live multichannel rendering on a real
-    /// AVAudioSourceNode render thread, every event dispatched through
-    /// processMidiMessage inside the callback; surviving to the assertions == zero traps.
-    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
-    func noTrapOnRenderThread() throws {
+    /// **G3′/G3-fx (no-trap)** — ≥5 s of live multichannel rendering on a
+    /// real AVAudioSourceNode render thread PER PARAMETER CASE (dry, then
+    /// effects-on), every event dispatched through processMidiMessage inside
+    /// the callback; surviving to the assertions == zero traps. The two
+    /// cases differ ONLY in `enableReverbAndChorus` — the event list
+    /// (including the send CCs, inert channel state when dry) is shared.
+    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
+          arguments: [false, true])
+    func noTrapOnRenderThread(effectsOn: Bool) throws {
         let font = try SoundFont(url: FixtureSF2.url)
         let settings = try SynthesizerSettings(
-            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: effectsOn)
         let synth = try Synthesizer(soundFont: font, settings: settings)
         let harness = RenderHarness(
             synthesizer: synth,
             events: [
                 RTMidiEvent(frame: 0, channel: 0, command: 0xC0, data1: 0, data2: 0),
+                RTMidiEvent(frame: 0, channel: 0, command: 0xB0, data1: 0x5D, data2: 64),   // chorus send
+                RTMidiEvent(frame: 0, channel: 1, command: 0xB0, data1: 0x5B, data2: 100),  // reverb send up
                 RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 60, data2: 100),
                 RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 64, data2: 96),
                 RTMidiEvent(frame: 0, channel: 0, command: 0x90, data1: 67, data2: 92),
@@ -95,6 +101,7 @@ struct RealTimeSafetyTests {
                 RTMidiEvent(frame: 66_150, channel: 1, command: 0xE0, data1: 0, data2: 96),
                 RTMidiEvent(frame: 88_200, channel: 0, command: 0x80, data1: 60, data2: 0),
                 RTMidiEvent(frame: 88_200, channel: 0, command: 0xB0, data1: 0x07, data2: 80),
+                RTMidiEvent(frame: 110_250, channel: 0, command: 0xB0, data1: 0x5D, data2: 127), // chorus ramp mid-note
                 RTMidiEvent(frame: 132_300, channel: 0, command: 0x80, data1: 64, data2: 0),
                 RTMidiEvent(frame: 132_300, channel: 0, command: 0x80, data1: 67, data2: 0),
                 RTMidiEvent(frame: 154_350, channel: 1, command: 0x80, data1: 55, data2: 0),
@@ -118,58 +125,46 @@ struct RealTimeSafetyTests {
     }
     #endif
 
-    /// **G3′-dry (zero-alloc)** — after warm-up, a measured window of rendering
-    /// (full-pool steal bursts + raw MIDI dispatch + note-offs) allocates
-    /// nothing in the render path.
+    /// **G3′/G3-fx (zero-alloc)** — after warm-up, a measured window of
+    /// rendering (full-pool steal bursts + raw MIDI dispatch + note-offs —
+    /// with the effects bus active in the effectsOn case) allocates nothing
+    /// in the render path.
     ///
-    /// RELIABILITY DESIGN (see the design consult recorded in the plan). The
-    /// spike's single-window `<= 0` assertion is not robust once the suite runs
-    /// 100+ tests in parallel: `malloc_zone_statistics(malloc_default_zone())`
-    /// reads the PROCESS-GLOBAL zone, and Swift Testing runs suites
-    /// concurrently, so an unrelated suite's heap work lands inside the snapshot
-    /// window as a SPORADIC, BOUNDED positive delta (single-digit blocks, ~25%
-    /// of windows). `.serialized` cannot help — it orders only within a suite,
-    /// not against other suites. The robust criterion exploits that signal and
-    /// noise have opposite shapes:
-    ///   - A GENUINE render-path allocation recurs on EVERY render → a positive,
-    ///     REPRODUCIBLE floor (~200 blocks per 200-render window) in EVERY window.
-    ///   - Cross-suite contamination pollutes a random SUBSET of windows.
-    /// The synth itself never frees at the malloc level inside a window (voices
-    /// are pooled; `VoiceCollection.process` swap-compacts, no dealloc), so a
-    /// window's INTRINSIC delta is exactly 0 (alloc-free) or a positive floor
-    /// (regression); any NEGATIVE delta is provably external. So: measure short
-    /// windows, retrying; PASS as soon as one window is non-positive (a quiet or
-    /// externally-freed window). A real per-render leak carries its positive floor
-    /// into EVERY window, so it can never satisfy that — but note a large external
-    /// negative (e.g. an AVAudioEngine-teardown deferred-free from a sibling test)
-    /// could in principle mask a SMALL intrinsic leak in a given window, so this
-    /// parallel-run PASS is a reliability filter, not the proof. FAIL only when
-    /// EVERY window netted a positive delta (the reproducible signature of a real
-    /// leak, which cross-suite noise cannot forge across all windows). The
-    /// authoritative zero-alloc proof is the exact 0/0 STRICT WITNESS, logged here
-    /// and enforced in the isolated run
-    /// (`swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup`),
-    /// where the process-global zone has no concurrent contamination (Task 12).
-    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"))
-    func zeroAllocationAfterWarmup() throws {
+    /// RELIABILITY DESIGN (unchanged from P1 — see that plan's Task 11):
+    /// `malloc_zone_statistics` reads the PROCESS-GLOBAL zone and Swift
+    /// Testing runs suites concurrently, so cross-suite heap work lands in a
+    /// sporadic SUBSET of windows as bounded noise, while a genuine
+    /// render-path allocation recurs in EVERY window as a reproducible
+    /// positive floor. PASS as soon as one short window nets non-positive;
+    /// FAIL only when every window is positive. The authoritative proof is
+    /// the exact-0/0 STRICT WITNESS in the isolated run
+    /// (`SWIFTYSYNTH_RT_STRICT=1 swift test --filter
+    /// RealTimeSafetyTests.zeroAllocationAfterWarmup`, which runs BOTH
+    /// parameter cases — dry and effects-on).
+    @Test(.enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
+          arguments: [false, true])
+    func zeroAllocationAfterWarmup(effectsOn: Bool) throws {
         let font = try SoundFont(url: FixtureSF2.url)
         let settings = try SynthesizerSettings(
-            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: effectsOn)
         let synth = try Synthesizer(soundFont: font, settings: settings)
         var left = [Float](repeating: 0, count: 512)
         var right = [Float](repeating: 0, count: 512)
 
-        // Thorough warm-up so no lazy first-touch allocation survives into the
-        // measured windows: saturate the pool, force a full 64-steal burst, run
-        // the dispatch paths, cycle voice spawn/free.
+        // Thorough warm-up so no lazy first-touch allocation survives into
+        // the measured windows: activate the chorus send (nonzero chorus
+        // input when the bus exists; inert channel state when dry), saturate
+        // the pool, force a full 64-steal burst, run the dispatch paths.
+        synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x5D, data2: 64)
         for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
         for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) }   // 64 steals
         synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80)
         for _ in 0..<200 { renderInto(synth, &left, &right, 0..<512) }
 
-        // One short (~200-render) measured window: renders + a full-pool steal
-        // burst + raw dispatch + note-offs, bracketed by a process-global
+        // One short (~200-render) measured window: renders + a full-pool
+        // steal burst + raw dispatch (incl. a reverb-send ramp through the
+        // effects half) + note-offs, bracketed by a process-global
         // malloc-zone snapshot. NO print/log inside.
         func measureWindow() -> (blocks: Int, size: Int) {
             var before = malloc_statistics_t()
@@ -178,6 +173,7 @@ struct RealTimeSafetyTests {
                 if i == 0 { for key in 22..<86 { synth.noteOn(key: key, velocity: 100, on: 0) } }   // full-pool steal
                 if i == 50 { synth.processMidiMessage(channel: 0, command: 0xE0, data1: 0, data2: 80) }
                 if i == 100 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x07, data2: 90) }
+                if i == 125 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x5B, data2: 100) }  // reverb-send ramp
                 if i == 150 { for key in 22..<40 { synth.noteOff(key: key, on: 0) } }
                 renderInto(synth, &left, &right, 0..<512)
             }
@@ -201,7 +197,7 @@ struct RealTimeSafetyTests {
 
         let cleanWindow = windows.first { $0.blocks <= 0 && $0.size <= 0 }
         let exactZeroWitness = windows.contains { $0.blocks == 0 && $0.size == 0 }
-        print("G3-alloc windows=\(windows) exactZeroWitness=\(exactZeroWitness)")
+        print("G3-alloc[effectsOn=\(effectsOn)] windows=\(windows) exactZeroWitness=\(exactZeroWitness)")
 
         // Fails only when EVERY window allocated — cross-suite noise contaminates
         // a sporadic subset (never all windows), but a real render-path
@@ -210,43 +206,48 @@ struct RealTimeSafetyTests {
         #expect(cleanWindow != nil, """
             every one of \(windows.count) measured windows netted a positive \
             malloc-zone delta — the reproducible signature of a render-path \
-            allocation. windows=\(windows). Find the allocation (spec §8: the \
-            render path must be alloc-free after warm-up); do not loosen the gate.
+            allocation (effectsOn=\(effectsOn)). windows=\(windows). Find the \
+            allocation (spec §8: the render path — effects bus included — must \
+            be alloc-free after warm-up); do not loosen the gate.
             """)
 
         // The default `swift test` run (parallel, multi-suite) uses the
-        // noise-robust bounded-retry assertion above, since cross-suite malloc
-        // activity can sporadically pollute a subset of windows. The
-        // authoritative exact-0/0 proof is gated behind an env var so it only
-        // runs isolated (no cross-suite contamination to explain away):
+        // noise-robust bounded-retry assertion above. The authoritative
+        // exact-0/0 proof is gated behind an env var so it only runs isolated:
         //   SWIFTYSYNTH_RT_STRICT=1 swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup
         if ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil {
             #expect(exactZeroWitness, """
                 STRICT mode: expected at least one measured window with an exact \
-                0/0 malloc-zone delta (the authoritative zero-alloc proof), but \
-                none of \(windows.count) windows were exactly zero. windows=\(windows).
+                0/0 malloc-zone delta (the authoritative zero-alloc proof,
+                effectsOn=\(effectsOn)), but none of \(windows.count) windows \
+                were exactly zero. windows=\(windows).
                 """)
         }
     }
 
-    /// **G3′-dry (CPU)** — per-callback cost at 512-frame buffers (deadline
-    /// 11.61 ms @ 44.1 kHz): p99 < 25% for 1 note; p99 < 50% for a saturated
-    /// 256-voice pool (the canonical polyphony ceiling).
-    /// Release builds only — debug-build timings measure the optimizer, not the design.
+    /// **G3′/G3-fx (CPU)** — per-callback cost at 512-frame buffers
+    /// (deadline 11.61 ms @ 44.1 kHz): p99 < 25% for 1 note; p99 < 50% for
+    /// a saturated 256-voice pool. Same bars dry and effects-on (spec §7
+    /// G3′ budgets the FULL scope — the effects bus must fit inside the P1
+    /// envelope). Release builds only.
     @Test(
         .enabled(if: FixtureSF2.exists, "GeneralUser GS not present at the locked path"),
-        .enabled(if: TestEnv.isRelease, "CPU budget is measured in release builds (swift test -c release)")
+        .enabled(if: TestEnv.isRelease, "CPU budget is measured in release builds (swift test -c release)"),
+        arguments: [false, true]
     )
-    func cpuBudget() throws {
+    func cpuBudget(effectsOn: Bool) throws {
         let deadlineNanos = 512.0 / 44_100.0 * 1e9   // ≈ 11_609_977 ns
         let font = try SoundFont(url: FixtureSF2.url)
         var left = [Float](repeating: 0, count: 512)
         var right = [Float](repeating: 0, count: 512)
 
-        // --- 1 note, dry default-size pool ---------------------------------------------
+        // --- 1 note, default-size pool --------------------------------------------------
         let settings1 = try SynthesizerSettings(
-            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: false)
+            sampleRate: 44_100, maximumPolyphony: 64, enableReverbAndChorus: effectsOn)
         let synth1 = try Synthesizer(soundFont: font, settings: settings1)
+        if effectsOn {
+            synth1.processMidiMessage(channel: 0, command: 0xB0, data1: 0x5D, data2: 64)  // chorus live
+        }
         synth1.noteOn(key: 60, velocity: 100, on: 0)
         for _ in 0..<100 { renderInto(synth1, &left, &right, 0..<512) }   // warm-up
         var oneNoteSamples = [UInt64]()
@@ -260,12 +261,14 @@ struct RealTimeSafetyTests {
         let p99OneNote = Double(percentile(0.99, of: oneNoteSamples))
 
         // --- saturated 256-voice pool: 64 distinct keys × 4 melodic channels ------------
-        // (GeneralUser GS Grand Piano = 1 panned-mono voice per noteOn, so 64
-        // keys fill 64 slots per channel; channels 0..3 share the default
-        // piano preset.)
         let settings256 = try SynthesizerSettings(
-            sampleRate: 44_100, maximumPolyphony: 256, enableReverbAndChorus: false)
+            sampleRate: 44_100, maximumPolyphony: 256, enableReverbAndChorus: effectsOn)
         let synth256 = try Synthesizer(soundFont: font, settings: settings256)
+        if effectsOn {
+            for channel in 0..<4 {
+                synth256.processMidiMessage(channel: channel, command: 0xB0, data1: 0x5D, data2: 64)
+            }
+        }
         for channel in 0..<4 {
             for key in 22..<86 { synth256.noteOn(key: key, velocity: 100, on: channel) }
         }
@@ -286,12 +289,12 @@ struct RealTimeSafetyTests {
         }
         let p99Saturated = Double(percentile(0.99, of: saturatedSamples))
 
-        print("G3-cpu: deadline=\(deadlineNanos)ns  1-note p99=\(p99OneNote)ns (\(100 * p99OneNote / deadlineNanos)%)  256-voice p99=\(p99Saturated)ns (\(100 * p99Saturated / deadlineNanos)%)  voices=\(saturatedVoices)")
+        print("G3-cpu[effectsOn=\(effectsOn)]: deadline=\(deadlineNanos)ns  1-note p99=\(p99OneNote)ns (\(100 * p99OneNote / deadlineNanos)%)  256-voice p99=\(p99Saturated)ns (\(100 * p99Saturated / deadlineNanos)%)  voices=\(saturatedVoices)")
 
         #expect(p99OneNote < 0.25 * deadlineNanos,
-                "1-note p99 \(p99OneNote) ns is ≥ 25% of the 11.6 ms deadline")
+                "1-note p99 \(p99OneNote) ns is ≥ 25% of the 11.6 ms deadline (effectsOn=\(effectsOn))")
         #expect(p99Saturated < 0.50 * deadlineNanos,
-                "256-voice p99 \(p99Saturated) ns is ≥ 50% of the 11.6 ms deadline")
+                "256-voice p99 \(p99Saturated) ns is ≥ 50% of the 11.6 ms deadline (effectsOn=\(effectsOn))")
     }
 }
 
