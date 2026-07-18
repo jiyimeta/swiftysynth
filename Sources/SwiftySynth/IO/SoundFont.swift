@@ -15,8 +15,9 @@ public final class SoundFont {
 
     /// Loads a SoundFont from `data`. Reads `RIFF` fourCC + u32 size + `sfbk`
     /// form, then the INFO list, sdta list, and pdta list in that order.
-    /// Mirrors `SoundFont`'s private `Load(Stream)` method exactly (modulo
-    /// the `CheckSamples`/`CheckRegions` omission documented above).
+    /// Mirrors `SoundFont`'s private `Load(Stream)` method exactly, including
+    /// the post-load `CheckSamples`/`CheckRegions` passes (`checkSamples()` /
+    /// `checkRegions()` below).
     ///
     /// Swift-idiom adjustment: C# reads from a `Stream`; this port reads the
     /// whole file into `Data` up front (via `BinaryReader`), keeping the
