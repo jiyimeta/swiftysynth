@@ -3,14 +3,27 @@ import Foundation
 import Testing
 @testable import SwiftySynth
 
-/// The locked reference-font policy (spec §4): absolute path, tests gated on existence.
-/// SWIFTYSYNTH_SF2 exists so the G4 hermeticity check can simulate the font's absence
-/// (and so another machine could point at its own copy).
+/// Reference-font policy (spec §4): the ~32 MB GeneralUser-GS font is NOT
+/// committed (it would bloat every SwiftPM consumer's clone), so fixture tests
+/// are gated on its existence and skip when it is absent. Following the upstream
+/// convention — rustysynth resolves its test SF2 relative to `CARGO_MANIFEST_DIR`,
+/// MeltySynth references it by bare filename — the default location is
+/// `GeneralUser-GS.sf2` at the package root. Set `SWIFTYSYNTH_SF2` to point at a
+/// copy elsewhere (the G4 hermeticity check also uses it to simulate absence).
 enum FixtureSF2 {
-    static let lockedPath =
-        "GeneralUser-GS.sf2"
+    /// `<package root>/GeneralUser-GS.sf2`, derived at compile time from
+    /// `#filePath` (= `<package>/Tests/SwiftySynthTests/FixtureSupport.swift`,
+    /// so three parent hops reach the package directory) — the SwiftPM analogue
+    /// of rustysynth's `CARGO_MANIFEST_DIR`-relative lookup. No absolute path is
+    /// baked into the source.
+    static let defaultPath = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // Tests/SwiftySynthTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // package root
+        .appendingPathComponent("GeneralUser-GS.sf2")
+        .path
     static var path: String {
-        ProcessInfo.processInfo.environment["SWIFTYSYNTH_SF2"] ?? lockedPath
+        ProcessInfo.processInfo.environment["SWIFTYSYNTH_SF2"] ?? defaultPath
     }
     static var exists: Bool { FileManager.default.fileExists(atPath: path) }
     static var url: URL { URL(fileURLWithPath: path) }

@@ -19,7 +19,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SF2="${SWIFTYSYNTH_SF2:-GeneralUser-GS.sf2}"
+# Default: GeneralUser-GS.sf2 at the repo root (the script cd'd there above) —
+# the font is not committed; place it there or point SWIFTYSYNTH_SF2 elsewhere.
+SF2="${SWIFTYSYNTH_SF2:-$PWD/GeneralUser-GS.sf2}"
 if [[ ! -f "$SF2" ]]; then
     echo "verify-rt-gates: reference SF2 not found at $SF2 (set SWIFTYSYNTH_SF2) — refusing a vacuous pass" >&2
     exit 2

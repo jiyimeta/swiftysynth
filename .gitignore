@@ -3,8 +3,11 @@
 .swiftpm/
 Tools/oracle/target/
 
-# Reference clones (pinned by commit hash in Tests/MeltySynthTests/Fixtures/README.md)
+# Reference clones (pinned by commit hash in Tests/SwiftySynthTests/Fixtures/README.md)
 .reference/
+
+# Reference SoundFont — not committed (see Tests/SwiftySynthTests/Fixtures/README.md)
+*.sf2
 
 # Superpowers docs stay local in this public repo
 docs/superpowers/

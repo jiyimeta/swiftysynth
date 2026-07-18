@@ -1,13 +1,19 @@
 # Test fixtures
 
-Committed, derived test vectors for the spike gates. The 32 MB GeneralUser GS
+Committed, derived test vectors for the spike gates. The ~32 MB GeneralUser GS
 font itself is NOT committed (it would bloat every SwiftPM consumer's clone
-forever); fixture-dependent tests reference it at an absolute path and skip
-when it is absent.
+forever); fixture-dependent tests are gated on its existence and skip when it is
+absent.
 
 ## Reference SF2
 
-- Locked path: `GeneralUser-GS.sf2`
+Following the upstream convention (rustysynth resolves its test SF2 relative to
+`CARGO_MANIFEST_DIR`; MeltySynth references it by bare filename), the default
+location is `GeneralUser-GS.sf2` at the **package root** (gitignored). Drop the
+font there, or set `SWIFTYSYNTH_SF2` to a copy elsewhere.
+
+- Default path: `<package root>/GeneralUser-GS.sf2` (override: `SWIFTYSYNTH_SF2`)
+- File: GeneralUser GS v1.44 (`GeneralUser-GS.sf2`)
 - SHA-256: `9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe`
 
 ## Pinned reference implementations (gitignored clones under `.reference/`)
