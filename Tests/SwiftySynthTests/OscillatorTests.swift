@@ -54,6 +54,32 @@ struct OscillatorTests {
         #expect(out[100...].contains { abs($0) > 0.01 })
     }
 
+    /// Item D regression: a malformed font can drive `pitchRatio` to a
+    /// non-finite or out-of-range value (a huge `scaleTuning` overflowing
+    /// `powf` to +infinity; a zero-`sampleRate` sample header yielding NaN;
+    /// a negative one, a negative ratio) — C#'s unchecked `(long)` cast
+    /// saturates such values; Swift's `Int64(_:)` traps on them.
+    /// `fillBlock` must fold every one of these to a fixed-point ratio of 0
+    /// (freezing the read position at its current, already-validated
+    /// index) instead of trapping, and the oscillator must keep behaving
+    /// normally afterward.
+    @Test func fillBlockNeverTrapsOnNonFiniteOrOutOfRangePitchRatio() throws {
+        var data = (0..<128).map { Int16($0 * 100) }
+        data.append(contentsOf: [Int16](repeating: 0, count: 4)) // guard samples past end
+        let osc = Oscillator(sampleRate: 44_100)
+        osc.start(data: data, loopMode: .noLoop, sampleRate: 44_100,
+                  start: 0, end: 128, startLoop: 0, endLoop: 128,
+                  rootKey: 60, coarseTune: 0, fineTune: 0, scaleTuning: 100)
+        var block = [Float](repeating: 0, count: 64)
+
+        for ratio in [Double.nan, .infinity, 1e300, -4.0] {
+            #expect(osc.fillBlock(&block, ratio) == true, "ratio \(ratio) must not trap")
+        }
+        // The read position froze at an already-validated index rather than
+        // walking off into garbage or overflowing — normal playback resumes.
+        #expect(osc.fillBlock(&block, 1.0) == true)
+    }
+
     /// One octave up (pitch = rootKey + 12) advances 2 source samples per output sample.
     @Test func octaveUpDoublesTheRate() throws {
         var data = (0..<256).map { Int16($0 * 50) }

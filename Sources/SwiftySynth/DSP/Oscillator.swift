@@ -102,7 +102,21 @@ final class Oscillator {
 
     /// Mirrors `Oscillator.FillBlock`.
     func fillBlock(_ block: inout [Float], _ pitchRatio: Double) -> Bool {
-        let pitchRatio_fp = Int64(Double(Oscillator.fracUnit) * pitchRatio)
+        // C# converts with an unchecked `(long)` cast, which saturates (and
+        // folds NaN to 0) instead of failing; Swift's `Int64(_:)` traps on
+        // any non-finite or out-of-range value. A malformed font can drive
+        // `pitchRatio` there (a huge `scaleTuning` overflows `powf` to
+        // +infinity; a zero sample-header `sampleRate` yields NaN; a
+        // negative one, a negative ratio), so fold that whole tail —
+        // non-finite, negative, or >= 2^62 — to 0: the read position
+        // freezes at its current already-validated index and the voice ends
+        // through the normal envelope/steal path instead of trapping here,
+        // overflowing `position_fp += pitchRatio_fp`, or driving the sample
+        // index negative — never-trap. Every ratio a well-formed font
+        // produces (fixed-point product well under 2^40) converts
+        // bit-identically to before.
+        let product = Double(Oscillator.fracUnit) * pitchRatio
+        let pitchRatio_fp = product >= 0 && product < 0x1p62 ? Int64(product) : 0
 
         if looping {
             return fillBlockContinuous(&block, pitchRatio_fp)
