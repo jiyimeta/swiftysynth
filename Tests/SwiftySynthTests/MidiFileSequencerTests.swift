@@ -60,6 +60,24 @@ struct MidiFileSequencerTests {
             loopType: .finalFantasy)
     }
 
+    /// FF ZERO-LENGTH loop: LoopStart (CC116) and LoopEnd (CC117) at the
+    /// SAME tick (480, i.e. t=0.5s) — a `loopEnd` whose rewind target
+    /// (`times[loopIndex]`) equals its own time. Regression fixture for
+    /// item A's `times[loopIndex] < time` guard: without it, the in-loop
+    /// rewind resumes at `msgIndex = loopIndex`, pointing back at the very
+    /// `.loopStart` just processed, with `currentTime` never advancing —
+    /// `processEvents` spins forever inside the same `render` call.
+    private static func zeroLengthLoopSong() throws -> MidiFile {
+        try MidiFile(
+            data: SyntheticSMF.file(format: 0, resolution: 480, tracks: [[
+                (0, [0x90, 60, 100]),
+                (480, [0xB0, 116, 0]),   // loopStart @ tick 480 (t=0.5s)
+                (0, [0xB0, 117, 0]),     // loopEnd @ the SAME tick — zero length
+                (0, SyntheticSMF.endOfTrack),
+            ]]),
+            loopType: .finalFantasy)
+    }
+
     /// LoopStart-only song with NO LoopEnd: a note at t=0, an EOT at t=0.5,
     /// and a loop point at tick 960 (t=1.0) that is PAST the track's last
     /// tick (mirrors `loopPointInsertsALoopStartIntoTrackZero`'s "past the
@@ -176,6 +194,36 @@ struct MidiFileSequencerTests {
         #expect(!sequencer.isAtEnd, "never at end while looping")
         // 1420 blocks - the second rewind at block 1380 → clock ≈ 40·q.
         #expect(sequencer.position.seconds < 1.0, "position rewound to the loop region")
+    }
+
+    /// Item A regression: a zero-length FF loop (LoopStart/LoopEnd on the
+    /// same tick) must not hang `render` forever. Pre-fix, the in-loop
+    /// `.loopEnd` rewind resumes at `msgIndex = loopIndex` with
+    /// `currentTime` reset to a value it is already at, so the very next
+    /// `while` iteration re-reaches the same `.loopEnd` and rewinds again —
+    /// `processEvents` never returns. The `.timeLimit` trait turns that
+    /// hang into a reported failure instead of an indefinitely stuck test
+    /// run. Post-fix, the zero-length `loopEnd` is skipped like any other
+    /// already-due marker (the guard `times[loopIndex] < time` fails), and
+    /// the end-of-list rewind (fired at most once per call) takes over,
+    /// pinning playback at the loop point.
+    @Test(.timeLimit(.minutes(1)))
+    func zeroLengthLoopDoesNotHang() throws {
+        let sequencer = MidiFileSequencer(synthesizer: try Self.makeSynthesizer())
+        sequencer.play(try Self.zeroLengthLoopSong(), loop: true)
+
+        var left = [Float](repeating: 0, count: 64)
+        var right = [Float](repeating: 0, count: 64)
+        for _ in 0..<400 {
+            seqRenderInto(sequencer, &left, &right, 0..<64)
+        }
+
+        #expect(!sequencer.isAtEnd, "never at end while looping")
+        // Playback is pinned at the loop point (tick 480 = 0.5s): every
+        // processEvents call resets currentTime back to times[loopIndex]
+        // via the end-of-list rewind, and render() then advances it by at
+        // most one block quantum before the next call.
+        #expect(abs(sequencer.position.seconds - 0.5) < 0.05)
     }
 
     /// Covers the END-OF-LIST rewind — the `if msgIndex == count && loop`
@@ -307,5 +355,38 @@ struct MidiFileSequencerTests {
         #expect(fine == [0, 22_080, 44_160])
         let coarse = try dispatchFrames(chunk: 997)
         #expect(coarse == [0, 22_080 / 997 * 997, 44_160 / 997 * 997])
+    }
+
+    /// Item C regression: `seek(to:)`'s chase must be STRICTLY before
+    /// `target`, leaving messages exactly AT `target` for the first
+    /// render's `processEvents` drain. A file with a CC7 and a note-on
+    /// BOTH at t=0: pre-fix (`<=` chase), the CC7 is consumed directly by
+    /// `seek` via `synthesizer.processMidiMessage` — bypassing `onSend`
+    /// entirely — and the note-on is skipped (chase never retriggers
+    /// notes) and its `msgIndex` is still advanced past, so it is dropped
+    /// forever; the recorder sees nothing. Post-fix (`<` chase), `seek`
+    /// touches neither message, and the first render's drain dispatches
+    /// both through the normal `onSend`-honoring path, in file order —
+    /// making `seek(to: .zero)` indistinguishable from `play`.
+    @Test func seekToZeroDispatchesBoundaryMessagesExactlyOnce() throws {
+        let sequencer = MidiFileSequencer(synthesizer: try Self.makeSynthesizer())
+        let recorder = DispatchRecorder()
+        sequencer.onSend = { _, channel, command, data1, data2 in
+            recorder.dispatches.append((recorder.currentFrame, channel, command, data1, data2))
+        }
+        let song = try MidiFile(data: SyntheticSMF.file(format: 0, resolution: 480, tracks: [[
+            (0, [0xB0, 7, 100]),
+            (0, [0x90, 60, 100]),
+            (480, SyntheticSMF.endOfTrack),
+        ]]))
+        sequencer.play(song, loop: false)
+        sequencer.seek(to: .zero)
+
+        var left = [Float](repeating: 0, count: 64)
+        var right = [Float](repeating: 0, count: 64)
+        seqRenderInto(sequencer, &left, &right, 0..<64)
+
+        #expect(recorder.dispatches.map(\.command) == [0xB0, 0x90])
+        #expect(recorder.dispatches.map(\.data1) == [7, 60])
     }
 }

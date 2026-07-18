@@ -63,11 +63,15 @@ public final class MidiFileSequencer {
 
     /// Repositions playback so the next `render` continues from `position`.
     ///
-    /// "Chase" seek: every non-note-on channel message up to `position`
-    /// (program change / control change / pitch bend, …) is re-applied so the
-    /// timbre and controller state at the seek point are correct; notes that
-    /// would have started earlier are NOT retriggered (their release tails are
-    /// simply absent). A no-op before `play` / after `stop`.
+    /// "Chase" seek: every non-note-on channel message strictly before
+    /// `position` (program change / control change / pitch bend, …) is
+    /// re-applied so the timbre and controller state at the seek point are
+    /// correct; notes that would have started earlier are NOT retriggered
+    /// (their release tails are simply absent). Messages exactly AT
+    /// `position` are left for the first render's `processEvents` drain to
+    /// dispatch exactly once through the normal path (honoring `onSend`),
+    /// so boundary note-ons sound and `seek(to: .zero)` is indistinguishable
+    /// from `play`. A no-op before `play` / after `stop`.
     ///
     /// Not thread-safe — serialize with `render` / `play` / `stop` like the rest
     /// of the transport (spec §8).
@@ -85,7 +89,13 @@ public final class MidiFileSequencer {
         msgIndex = 0
         loopIndex = 0
 
-        while msgIndex < midiFile.messages.count, midiFile.times[msgIndex] <= target {
+        // Strictly-before only: messages exactly AT `target` are left for
+        // the first render's `processEvents` drain (`time <= currentTime`
+        // with `currentTime == target`), which dispatches them exactly once
+        // through the normal path (honoring `onSend`) — so boundary
+        // note-ons sound and `seek(to: .zero)` is indistinguishable from
+        // `play`.
+        while msgIndex < midiFile.messages.count, midiFile.times[msgIndex] < target {
             let msg = midiFile.messages[msgIndex]
             if msg.type == .normal {
                 // 0x90 with a non-zero velocity is a note-on; skip it so the
@@ -139,6 +149,15 @@ public final class MidiFileSequencer {
     /// times.count` guard with no C# equivalent: `Times[loopIndex]` on an
     /// empty array throws a catchable exception in C#, but Swift's Array
     /// subscript hard-traps — never-trap applies.
+    ///
+    /// The in-loop `.loopEnd` rewind additionally requires the loop to have
+    /// positive duration (`times[loopIndex] < time`) — C# hangs the render
+    /// call forever on a zero-length loop; never-hang applies. The
+    /// end-of-list rewind needs no duration guard: it runs at most once per
+    /// call, after the while loop has exited, so it cannot loop within a
+    /// call — its pinned steady state (see
+    /// `endOfListRewindResumesAtLoopIndexNotPlusOne`) is bounded work per
+    /// render block.
     private func processEvents() {
         guard let midiFile else { return }
 
@@ -157,12 +176,25 @@ public final class MidiFileSequencer {
                 } else if loop {
                     if msg.type == .loopStart {
                         loopIndex = msgIndex
-                    } else if msg.type == .loopEnd, loopIndex < midiFile.times.count {
+                    } else if msg.type == .loopEnd, loopIndex < midiFile.times.count,
+                              midiFile.times[loopIndex] < time {
                         // `loopIndex < times.count` is defense-in-depth: the
                         // parser now rejects `trackCount == 0` (the only way
                         // an empty `times` could reach here), but this keeps
                         // the rewind from Array-subscript-trapping on any
                         // other empty-`times` MidiFile — never-trap.
+                        // `times[loopIndex] < time` requires the loop to have
+                        // positive duration before rewinding; C# has no such
+                        // guard and spins forever inside this drain on a
+                        // zero-length loop (the rewound `msgIndex` re-reaches
+                        // this same `loopEnd` without `currentTime` ever
+                        // advancing) — never-hang. A zero-length `loopEnd` is
+                        // instead skipped like any other already-due marker
+                        // (the end-of-list rewind below then loops the tail
+                        // from the `loopStart`, the same shape as a
+                        // loopStart-only file); positive-length loops are
+                        // unaffected, because the new condition already held
+                        // for every rewind C# performs without hanging.
                         currentTime = midiFile.times[loopIndex]
                         msgIndex = loopIndex
                         synthesizer.noteOffAll(immediate: false)
