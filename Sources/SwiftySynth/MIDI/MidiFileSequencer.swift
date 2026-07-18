@@ -61,6 +61,49 @@ public final class MidiFileSequencer {
         synthesizer.reset()
     }
 
+    /// Repositions playback so the next `render` continues from `position`.
+    ///
+    /// "Chase" seek: every non-note-on channel message up to `position`
+    /// (program change / control change / pitch bend, …) is re-applied so the
+    /// timbre and controller state at the seek point are correct; notes that
+    /// would have started earlier are NOT retriggered (their release tails are
+    /// simply absent). A no-op before `play` / after `stop`.
+    ///
+    /// Not thread-safe — serialize with `render` / `play` / `stop` like the rest
+    /// of the transport (spec §8).
+    public func seek(to position: Duration) {
+        guard let midiFile else { return }
+        let target = max(
+            0,
+            Double(position.components.seconds)
+                + Double(position.components.attoseconds) * 1e-18,
+        )
+
+        synthesizer.reset()
+        currentTime = target
+        blockWrote = synthesizer.blockSize
+        msgIndex = 0
+        loopIndex = 0
+
+        while msgIndex < midiFile.messages.count, midiFile.times[msgIndex] <= target {
+            let msg = midiFile.messages[msgIndex]
+            if msg.type == .normal {
+                // 0x90 with a non-zero velocity is a note-on; skip it so the
+                // seek doesn't retrigger notes. Everything else (note-off,
+                // program, CC, pitch bend, aftertouch) is chased.
+                let isNoteOn = msg.command == 0x90 && msg.data2 > 0
+                if !isNoteOn {
+                    synthesizer.processMidiMessage(
+                        channel: Int(msg.channel), command: Int(msg.command),
+                        data1: Int(msg.data1), data2: Int(msg.data2))
+                }
+            } else if msg.type == .loopStart {
+                loopIndex = msgIndex
+            }
+            msgIndex += 1
+        }
+    }
+
     /// Renders `left.count` (== `right.count`) frames, dispatching due MIDI
     /// messages at every internal block boundary. Mirrors
     /// `MidiFileSequencer.Render`: correct for any caller chunk size — the
