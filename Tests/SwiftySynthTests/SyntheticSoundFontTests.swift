@@ -177,4 +177,56 @@ struct SyntheticSoundFontTests {
             _ = try ZoneInfo.create(reader: BinaryReader(data: Data()), size: -4)
         }
     }
+
+    /// Item B: an unknown (out-of-range raw type) generator sitting BEFORE
+    /// the `.sampleID` terminator in an instrument zone's local generator
+    /// list must be silently ignored (SF2 §9.4), not fatal — the font still
+    /// loads end-to-end and the region resolves exactly as if the unknown
+    /// generator weren't there.
+    @Test func unknownInstrumentGeneratorIsIgnoredNotFatal() throws {
+        let font = try SoundFont(
+            data: SyntheticSF2.minimal(instrumentGenerators: [(999, 42), (53, 0)])
+        )
+        let instrument = font.instruments[0]
+        #expect(instrument.regions.count == 1)
+        #expect(instrument.regions[0].sample === font.sampleHeaders[0])
+        #expect(instrument.regions[0].sampleStart == 0, "unaffected by the unknown generator")
+    }
+
+    /// Item B: an unknown-typed generator as the FINAL generator of a zone
+    /// means `zone.generators.last?.type` is `nil`, and `nil != .sampleID`
+    /// is `true` — matching C#'s unchecked-enum comparison against
+    /// `SampleID`, which is likewise `true` for any raw value that isn't
+    /// the sampleID case. So the sole zone is (still) detected as global,
+    /// producing zero local regions.
+    @Test func unknownFinalGeneratorMarksZoneGlobal() throws {
+        let font = try SoundFont(
+            data: SyntheticSF2.minimal(instrumentGenerators: [(53, 0), (999, 42)])
+        )
+        #expect(font.instruments[0].regions.isEmpty)
+    }
+
+    /// Item E: a `smpl` sub-chunk claiming ~2 GB (0x7FFF_FFF0, well within
+    /// `Int32` range) with only 4 real bytes behind it must fail fast via
+    /// the normal EOF-safe read loop, not attempt a multi-gigabyte
+    /// `reserveCapacity` up front — pins the no-huge-reserve path
+    /// (`reserveCapacity` clamped against `BinaryReader.bytesRemaining`).
+    @Test func smplChunkClaimingHugeSizeFailsFastNotWithAHugeReserve() {
+        var smpl = ByteWriter()
+        smpl.i16(0); smpl.i16(0)   // 4 real bytes — far short of the claimed size
+        var sdta = ByteWriter()
+        sdta.fourCC("sdta")
+        sdta.fourCC("smpl")
+        sdta.u32(0x7FFF_FFF0)      // claims ~2 GB of sample data
+        sdta.append(smpl)
+
+        var w = ByteWriter()
+        w.fourCC("LIST")
+        w.u32(UInt32(sdta.data.count))
+        w.append(sdta)
+
+        #expect(throws: SwiftySynthError.self) {
+            _ = try SoundFontSampleData(reader: BinaryReader(data: w.data))
+        }
+    }
 }

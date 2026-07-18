@@ -43,4 +43,13 @@ struct BinaryReaderTests {
         #expect(reader.position == 6)
         #expect(throws: SwiftySynthError.self) { try reader.skip(5) }
     }
+
+    /// Item E: `bytesRemaining` tracks the cursor, used by chunk parsers to
+    /// clamp `reserveCapacity` against attacker-controlled sizes.
+    @Test func bytesRemainingTracksTheCursor() throws {
+        let reader = BinaryReader(data: Data(repeating: 0, count: 6))
+        #expect(reader.bytesRemaining == 6)
+        _ = try reader.readUInt32()
+        #expect(reader.bytesRemaining == 2)
+    }
 }

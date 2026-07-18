@@ -2,6 +2,9 @@
 ///
 /// Ported from `GeneratorType.cs` (MeltySynth, MIT License — see NOTICE).
 /// All 61 SF2-spec generator types (raw values 0...60) are transcribed.
+///
+/// Raw wire values outside `0...60` have no case — `Generator` stores them
+/// as a `nil` type and the regions ignore them (SF2 §9.4).
 enum GeneratorType: UInt16 {
     case startAddressOffset = 0
     case endAddressOffset = 1
@@ -75,8 +78,17 @@ enum GeneratorType: UInt16 {
 /// bits and reinterprets them as `(short)Value` later, at `gs[]` application
 /// time; the Swift port defers that reinterpretation the same way, via
 /// `Int16(bitPattern:)` at the call site.
+///
+/// `type` is `nil` when the wire value falls outside `0...60`: C#'s
+/// `GeneratorType` is an unchecked enum, so an out-of-range raw value is
+/// still stored (as an enum instance matching no named case) and simply
+/// falls through every `switch`/lookup that only handles the named cases —
+/// effectively ignored. Swift's `GeneratorType(rawValue:)` has no such
+/// instance to produce, so the Swift port models the same "stored but
+/// unrecognized" state explicitly as `nil`, dropped at `setParameter` time
+/// (SF2 §9.4: unknown generators are ignored, not fatal).
 struct Generator {
-    let type: GeneratorType
+    let type: GeneratorType?
     let value: UInt16
 
     init(type: GeneratorType, value: UInt16) {
@@ -85,11 +97,7 @@ struct Generator {
     }
 
     init(reader: BinaryReader) throws {
-        let rawType = try reader.readUInt16()
-        guard let type = GeneratorType(rawValue: rawType) else {
-            throw SwiftySynthError.invalidSoundFont("unknown generator type: \(rawType)")
-        }
-        self.type = type
+        self.type = GeneratorType(rawValue: try reader.readUInt16())
         self.value = try reader.readUInt16()
     }
 
@@ -105,7 +113,11 @@ struct Generator {
         }
 
         var generators: [Generator] = []
-        generators.reserveCapacity(size / 4 - 1)
+        // Reserve clamped to what the remaining bytes could hold: the claimed
+        // chunk size is untrusted, and the read loop below is already EOF-safe,
+        // so the clamp can only shrink a doomed reserve — it never changes what
+        // parses.
+        generators.reserveCapacity(min(size / 4 - 1, reader.bytesRemaining / 4))
 
         for _ in 0..<(size / 4 - 1) {
             generators.append(try Generator(reader: reader))

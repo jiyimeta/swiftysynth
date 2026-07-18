@@ -52,7 +52,11 @@ public final class SampleHeader {
         }
 
         var headers: [SampleHeader] = []
-        headers.reserveCapacity(size / 46 - 1)
+        // Reserve clamped to what the remaining bytes could hold: the claimed
+        // chunk size is untrusted, and the read loop below is already EOF-safe,
+        // so the clamp can only shrink a doomed reserve — it never changes what
+        // parses.
+        headers.reserveCapacity(min(size / 46 - 1, reader.bytesRemaining / 46))
 
         for _ in 0..<(size / 46 - 1) {
             headers.append(try SampleHeader(reader: reader))

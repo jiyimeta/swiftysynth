@@ -34,7 +34,11 @@ struct ZoneInfo {
         let count = size / 4
 
         var indices: [(generatorIndex: Int, modulatorIndex: Int)] = []
-        indices.reserveCapacity(count)
+        // Reserve clamped to what the remaining bytes could hold: the claimed
+        // chunk size is untrusted, and the read loop below is already EOF-safe,
+        // so the clamp can only shrink a doomed reserve — it never changes what
+        // parses.
+        indices.reserveCapacity(min(count, reader.bytesRemaining / 4))
         for _ in 0..<count {
             let generatorIndex = Int(try reader.readUInt16())
             let modulatorIndex = Int(try reader.readUInt16())

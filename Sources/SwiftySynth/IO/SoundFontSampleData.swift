@@ -58,7 +58,11 @@ final class SoundFontSampleData {
                 bitsPerSample = 16
                 let count = Int(chunkSize) / 2
                 var values: [Int16] = []
-                values.reserveCapacity(count)
+                // Reserve clamped to what the remaining bytes could hold: the
+                // claimed chunk size is untrusted, and the read loop below is
+                // already EOF-safe, so the clamp can only shrink a doomed
+                // reserve — it never changes what parses.
+                values.reserveCapacity(min(count, reader.bytesRemaining / 2))
                 for _ in 0..<count {
                     values.append(try reader.readInt16())
                 }

@@ -42,13 +42,18 @@ struct PresetInfo {
         var libraries: [Int] = []
         var genres: [Int] = []
         var morphologies: [Int] = []
-        names.reserveCapacity(count)
-        patchNumbers.reserveCapacity(count)
-        bankNumbers.reserveCapacity(count)
-        zoneStartIndices.reserveCapacity(count)
-        libraries.reserveCapacity(count)
-        genres.reserveCapacity(count)
-        morphologies.reserveCapacity(count)
+        // Reserve clamped to what the remaining bytes could hold: the claimed
+        // chunk size is untrusted, and the read loop below is already EOF-safe,
+        // so the clamp can only shrink a doomed reserve — it never changes what
+        // parses.
+        let reserveCount = min(count, reader.bytesRemaining / 38)
+        names.reserveCapacity(reserveCount)
+        patchNumbers.reserveCapacity(reserveCount)
+        bankNumbers.reserveCapacity(reserveCount)
+        zoneStartIndices.reserveCapacity(reserveCount)
+        libraries.reserveCapacity(reserveCount)
+        genres.reserveCapacity(reserveCount)
+        morphologies.reserveCapacity(reserveCount)
         for _ in 0..<count {
             names.append(try reader.readFixedLengthString(20))
             patchNumbers.append(Int(try reader.readUInt16()))
@@ -178,6 +183,10 @@ public final class Preset {
             throw SwiftySynthError.invalidSoundFont("The preset has no zone.")
         }
 
+        // `last?.type` is already `GeneratorType?`; an unknown (`nil`) type
+        // makes `!= .instrument` `true`, marking the zone global — matching
+        // C#'s unchecked-raw-value comparison against `Instrument`, which is
+        // likewise `true` for any raw value that isn't the instrument case.
         let firstIsGlobal = zones[0].generators.isEmpty || zones[0].generators.last?.type != .instrument
 
         if firstIsGlobal {
@@ -273,13 +282,21 @@ public final class PresetRegion {
         self.instrument = instruments[id]
     }
 
-    /// Mirrors `SetParameter`: unknown generator types are ignored. Every
-    /// defined `GeneratorType` case already falls within `0..<gs.count`
-    /// (`GeneratorType.count == 61 == gs.count`), so the bounds check below
-    /// can never actually reject anything reachable through this port; it
-    /// is kept for parity with the source.
+    /// Mirrors `SetParameter`: unknown generator types are ignored. C#
+    /// achieves this via its unchecked enum cast (an out-of-range raw value
+    /// still reaches the bounds check below and fails it, since it maps to
+    /// no `GeneratorType` case and so no `gs` slot); the Swift port's
+    /// `generator.type == nil` guard is the LIVE equivalent of that same
+    /// bounds check — `Generator.init(reader:)` already turned the
+    /// out-of-range raw value into `nil` (see `Generator.swift`), so
+    /// guarding here drops it the same way C#'s bounds check would. Every
+    /// defined `GeneratorType` case still falls within `0..<gs.count`
+    /// (`GeneratorType.count == 61 == gs.count`), so once `type` is
+    /// non-nil the bounds check below can never actually reject anything
+    /// reachable through this port; it is kept for parity with the source.
     private static func setParameter(_ generator: Generator, into gs: inout [Int16]) {
-        let index = Int(generator.type.rawValue)
+        guard let type = generator.type else { return }
+        let index = Int(type.rawValue)
         if index >= 0 && index < gs.count {
             gs[index] = Int16(bitPattern: generator.value)
         }

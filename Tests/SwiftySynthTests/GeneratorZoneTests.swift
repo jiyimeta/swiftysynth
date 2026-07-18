@@ -13,6 +13,19 @@ struct GeneratorZoneTests {
         #expect(Int16(bitPattern: g.value) == -100)
     }
 
+    /// Item B: a raw wire type outside `0...60` (`GeneratorType`'s range) has
+    /// no matching case — `Generator.init(reader:)` must store it as a `nil`
+    /// type (SF2 §9.4 "unknown generators are ignored") instead of throwing,
+    /// while still preserving the raw `value`.
+    @Test func generatorWithOutOfRangeRawTypeIsNilNotThrown() throws {
+        var w = ByteWriter()
+        w.u16(61)      // one past the last defined case (unusedEnd = 60)
+        w.u16(0x1234)
+        let g = try Generator(reader: BinaryReader(data: w.data))
+        #expect(g.type == nil)
+        #expect(g.value == 0x1234)
+    }
+
     @Test func readFromChunkDropsTheTerminalRecord() throws {
         var w = ByteWriter()
         w.u16(41); w.u16(2)   // instrument = 2

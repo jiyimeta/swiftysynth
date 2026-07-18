@@ -42,6 +42,12 @@ final class BinaryReader {
         self.position = 0
     }
 
+    /// Bytes remaining between the cursor and the end of the data. Chunk
+    /// parsers clamp `reserveCapacity` against this so a lying chunk size
+    /// cannot force a huge up-front allocation — the read loops themselves
+    /// are already EOF-safe and throw before reading past the end.
+    var bytesRemaining: Int { bytes.count - position }
+
     /// Ensures `count` more bytes are available, throwing otherwise.
     private func requireAvailable(_ count: Int) throws {
         if count < 0 || position + count > bytes.count {
