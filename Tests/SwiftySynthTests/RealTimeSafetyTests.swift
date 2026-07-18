@@ -112,6 +112,24 @@ extension RenderBlockFactory {
 }
 #endif
 
+/// The measured-window stop condition for the zero-alloc RT witnesses.
+///
+/// Non-strict (the default parallel run): any non-positive window is a
+/// sufficient clean witness — a genuine render-path allocation shows up as a
+/// reproducible positive floor in EVERY window, so one non-positive window
+/// disproves it.
+///
+/// Strict (the isolated `SWIFTYSYNTH_RT_STRICT=1` run): only an EXACT 0/0
+/// window is the authoritative proof. A net-negative window (external frees
+/// settling inside the measured span) is non-positive but NOT exact-zero, so
+/// it must NOT stop the search — otherwise a single such first window ends
+/// measurement with no exact-zero witness and the strict assertion flakes on
+/// pure measurement noise (the render path having allocated nothing).
+func rtZeroAllocWindowSatisfies(_ delta: (blocks: Int, size: Int), strict: Bool) -> Bool {
+    if strict { return delta.blocks == 0 && delta.size == 0 }
+    return delta.blocks <= 0 && delta.size <= 0
+}
+
 @Suite(.serialized)
 struct RealTimeSafetyTests {
     #if os(macOS)
@@ -258,12 +276,19 @@ struct RealTimeSafetyTests {
                     Int(after.size_in_use) - Int(before.size_in_use))
         }
 
+        // In STRICT mode the authoritative witness is an EXACT 0/0 window, so
+        // the search must not stop on a merely non-positive (e.g. net-freed)
+        // window — otherwise a single externally-freed first window ends
+        // measurement with no exact-zero witness and the strict assertion
+        // flakes. In the default (non-strict) run, any non-positive window is
+        // a sufficient clean witness and stops the search as before.
+        let strict = ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil
         var windows = [(blocks: Int, size: Int)]()
         for _ in 0..<8 {
             let delta = measureWindow()
             windows.append(delta)
-            if delta.blocks <= 0 && delta.size <= 0 {
-                break   // a quiet/externally-freed window — render path added nothing
+            if rtZeroAllocWindowSatisfies(delta, strict: strict) {
+                break   // strict: an exact 0/0 witness; non-strict: any non-positive window
             }
             // Drain: let this window's note-off frees and any pending external
             // frees settle OUTSIDE the next measured span.
@@ -290,7 +315,7 @@ struct RealTimeSafetyTests {
         // noise-robust bounded-retry assertion above. The authoritative
         // exact-0/0 proof is gated behind an env var so it only runs isolated:
         //   SWIFTYSYNTH_RT_STRICT=1 swift test --filter RealTimeSafetyTests.zeroAllocationAfterWarmup
-        if ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil {
+        if strict {
             #expect(exactZeroWitness, """
                 STRICT mode: expected at least one measured window with an exact \
                 0/0 malloc-zone delta (the authoritative zero-alloc proof,
@@ -353,12 +378,17 @@ struct RealTimeSafetyTests {
                     Int(after.size_in_use) - Int(before.size_in_use))
         }
 
+        // Strict mode needs an EXACT 0/0 witness; a net-freed window is
+        // non-positive but not exact-zero, so it must not stop the strict
+        // search (see rtZeroAllocWindowSatisfies) — the fix for the strict
+        // sequencer-witness flake. Non-strict stops on any non-positive window.
+        let strict = ProcessInfo.processInfo.environment["SWIFTYSYNTH_RT_STRICT"] != nil
         var windows = [(blocks: Int, size: Int)]()
         for _ in 0..<8 {
             let delta = measureWindow()
             windows.append(delta)
-            if delta.blocks <= 0 && delta.size <= 0 {
-                break   // a quiet/externally-freed window — render path added nothing
+            if rtZeroAllocWindowSatisfies(delta, strict: strict) {
+                break   // strict: an exact 0/0 witness; non-strict: any non-positive window
             }
             // Drain outside the next measured span.
             for _ in 0..<50 { seqRenderInto(sequencer, &left, &right, 0..<512) }
@@ -385,6 +415,26 @@ struct RealTimeSafetyTests {
                 \(windows.count) windows were exactly zero. windows=\(windows).
                 """)
         }
+    }
+
+    /// Regression for the strict zero-alloc witness flake. A net-freed first
+    /// window (`(-4, -8224)`, observed in an isolated strict run) is
+    /// non-positive, so the non-strict search treats it as a clean witness —
+    /// but it is NOT an exact-0/0 window, so the strict search must keep
+    /// going. Before the fix the loop used the non-strict `<= 0` break
+    /// unconditionally, so a net-freed first window ended the strict search
+    /// with no exact-zero witness and the strict assertion failed on pure
+    /// measurement noise (the render path having allocated nothing).
+    @Test func strictZeroAllocWitnessKeepsSearchingPastANetFreedWindow() {
+        // Net-freed window: a clean witness only in non-strict mode.
+        #expect(rtZeroAllocWindowSatisfies((blocks: -4, size: -8224), strict: false))
+        #expect(!rtZeroAllocWindowSatisfies((blocks: -4, size: -8224), strict: true))
+        // Exact zero: the authoritative witness, valid in both modes.
+        #expect(rtZeroAllocWindowSatisfies((blocks: 0, size: 0), strict: true))
+        #expect(rtZeroAllocWindowSatisfies((blocks: 0, size: 0), strict: false))
+        // A positive window is never a witness in either mode.
+        #expect(!rtZeroAllocWindowSatisfies((blocks: 1, size: 16), strict: false))
+        #expect(!rtZeroAllocWindowSatisfies((blocks: 1, size: 16), strict: true))
     }
 
     /// The 1- and 5-minute load averages and this host's active core count, or
