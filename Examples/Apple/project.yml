@@ -26,6 +26,17 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+      configs:
+        Release:
+          # See "The fix" in Examples/README.md: project-level Debug
+          # SWIFT_OPTIMIZATION_LEVEL does NOT reach a local (path:) SwiftPM
+          # dependency in this Xcode toolchain -- verified empirically, the
+          # package always compiles -Onone under the "Debug" configuration
+          # name regardless of inherited settings. Riding the Release
+          # configuration (where the package genuinely gets -O) and forcing
+          # just this app target back to -Onone is the working alternative:
+          # SwiftySynth optimized, this target's own code debuggable.
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
     sources:
       - path: SwiftySynthExample
         excludes:
@@ -52,6 +63,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
+      configs:
+        Release:
+          # See Examples/README.md "The fix" -- same rationale as the iOS
+          # target above: keep this app target -Onone while SwiftySynth
+          # builds -O under the Release configuration name.
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
     sources:
       - path: SwiftySynthExample
         excludes:
