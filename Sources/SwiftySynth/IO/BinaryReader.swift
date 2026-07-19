@@ -79,6 +79,39 @@ final class BinaryReader {
         Int16(bitPattern: try readUInt16())
     }
 
+    /// Reads `count` little-endian `Int16` values in a single bulk copy instead
+    /// of `count` separate `readInt16()` calls. A SoundFont's `smpl` chunk is one
+    /// contiguous block of little-endian `Int16` PCM, which on a little-endian
+    /// host — every Apple and Android target — already matches `Int16`'s
+    /// in-memory layout, so this is one `memcpy`. A big-endian host (never a real
+    /// target here) byte-swaps after the copy, so the result stays correct where
+    /// C#'s host-endian-sensitive `MemoryMarshal.Cast` would not. This matters
+    /// because a General-MIDI font holds tens of millions of samples: the
+    /// per-sample call + bounds-check + throw overhead of `readInt16()` dominates
+    /// load time in unoptimized (`-Onone`) debug builds — tens of seconds for a
+    /// ~200 MB font. Still EOF-safe: a lying, over-claimed `count` throws rather
+    /// than trapping, preserving the never-trap-the-host invariant.
+    func readInt16Array(count: Int) throws -> [Int16] {
+        guard count >= 0 else { throw SwiftySynthError.unexpectedEndOfData }
+        let byteCount = count * 2
+        try requireAvailable(byteCount)
+        let start = position
+        let values = bytes.withUnsafeBytes { raw in
+            [Int16](unsafeUninitializedCapacity: count) { dst, initialized in
+                if count > 0 {
+                    memcpy(dst.baseAddress!, raw.baseAddress! + start, byteCount)
+                }
+                initialized = count
+            }
+        }
+        position += byteCount
+        #if _endian(big)
+            return values.map { Int16(littleEndian: $0) }
+        #else
+            return values
+        #endif
+    }
+
     /// Little-endian, matching .NET `BinaryReader.ReadUInt32`.
     func readUInt32() throws -> UInt32 {
         try requireAvailable(4)

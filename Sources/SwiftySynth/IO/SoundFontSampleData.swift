@@ -47,26 +47,21 @@ final class SoundFontSampleData {
                 // negative length; a negative chunk size here would make
                 // Swift's `0..<(chunkSize / 2)` build an inverted range and
                 // trap, so reject it up front to preserve the "never trap
-                // the host app" invariant. The array is built via explicit
-                // little-endian `Int16` reads through `BinaryReader` (no
-                // `withUnsafeBytes` reinterpretation of file bytes), mirroring
-                // the loop shape of C#'s `MemoryMarshal.Cast` copy without
-                // relying on host-endianness-sensitive reinterpretation.
+                // the host app" invariant.
                 guard chunkSize >= 0 else {
                     throw SwiftySynthError.invalidSoundFont("The sample data chunk is invalid.")
                 }
                 bitsPerSample = 16
                 let count = Int(chunkSize) / 2
-                var values: [Int16] = []
-                // Reserve clamped to what the remaining bytes could hold: the
-                // claimed chunk size is untrusted, and the read loop below is
-                // already EOF-safe, so the clamp can only shrink a doomed
-                // reserve — it never changes what parses.
-                values.reserveCapacity(min(count, reader.bytesRemaining / 2))
-                for _ in 0..<count {
-                    values.append(try reader.readInt16())
-                }
-                samples = values
+                // The `smpl` chunk is one contiguous little-endian `Int16` PCM
+                // block, so read it in a single bulk copy (a `memcpy` on the LE
+                // hosts this package targets; `readInt16Array` byte-swaps only on
+                // a big-endian host). This is orders of magnitude faster than a
+                // per-sample `readInt16()` loop — a ~200 MB General-MIDI font
+                // holds ~100M samples, and that loop's per-call overhead alone
+                // cost tens of seconds in `-Onone` debug builds. `readInt16Array`
+                // stays EOF-safe (an over-claimed chunk size throws, never traps).
+                samples = try reader.readInt16Array(count: count)
             case "sm24":
                 // 24-bit audio is not supported; skip past it. `skip`
                 // itself rejects a negative count without trapping.
