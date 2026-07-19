@@ -11,9 +11,11 @@ enum ResourceLocator {
         }
         if let sounds = Bundle.main.resourceURL?.appendingPathComponent("Sounds"),
            let items = try? FileManager.default.contentsOfDirectory(
-               at: sounds, includingPropertiesForKeys: nil),
-           let sf2 = items.first(where: { $0.pathExtension.lowercased() == "sf2" }) {
-            return sf2
+               at: sounds, includingPropertiesForKeys: nil) {
+            let sf2s = items
+                .filter { $0.pathExtension.lowercased() == "sf2" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            if let sf2 = sf2s.first { return sf2 }
         }
         if let env = ProcessInfo.processInfo.environment["SWIFTYSYNTH_SF2"],
            !env.isEmpty, FileManager.default.fileExists(atPath: env) {

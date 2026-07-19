@@ -30,6 +30,14 @@ the real-time audio budget). It exists to reproduce, standalone, the
   flat over time in both builds (measured), the debug build is simply ~50–66×
   slower per operation.
 
+Running the **Release** configuration is optimizations-off-for-your-code, not
+a full Debug environment: it compiles out every `#if DEBUG` block, leaves
+`DEBUG` / `SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG` unset, and disables
+assertions (`ENABLE_NS_ASSERTIONS = NO`). This app's own build badge will
+even read "Build: Release" in that scenario — "app optimizations off,
+debugger-steppable" is accurate; "Debug environment" is not. See "The fix"
+below for what a Release run in this repo actually gives you.
+
 Measured on macOS, layers = 8, same MIDI file, `GeneralUser-GS.sf2`:
 
 | build                              | current % of budget | max %  | meter | active voices |
@@ -38,13 +46,30 @@ Measured on macOS, layers = 8, same MIDI file, `GeneralUser-GS.sf2`:
 | Release (fully optimized)           | 11–14%               | 18–24% | GREEN | ~93             |
 | Release + app forced `-Onone` (fix) | 24–26%               | 36%    | GREEN | 86–112          |
 
-### The fix — optimize the dependency, keep your app debuggable
+The "Release (fully optimized)" row is **not** what a plain Release run gives
+you out of the box: the shipped `project.yml` (see below) forces both app
+targets to `-Onone` in their Release configuration, as the running demo of
+the fix, so a plain `xcodebuild -configuration Release` reproduces the
+24–26% row. To reproduce the 11–14% fully-optimized row, remove that
+`SWIFT_OPTIMIZATION_LEVEL: "-Onone"` override from both targets and rebuild.
 
-Release already optimizes everything, so a plain Release run is fine as-is.
-For a build where **your own app code stays unoptimized/debuggable** while
-**SwiftySynth (the dependency) is fast**, the natural first attempt — set
-`SWIFT_OPTIMIZATION_LEVEL: "-O"` project-wide for the **Debug** configuration,
-then override it back to `-Onone` on the app targets — does **not** work:
+### The fix — run Release; optionally keep your own code unoptimized too
+
+The primary fix is simply: **run the Release configuration.** That alone is
+what makes SwiftySynth (the SwiftPM dependency) compile `-O` and clears the
+cliff — see the "Release (fully optimized)" baseline row above (11–14%). No
+`project.yml` change is required for this part. Remember the caveat above,
+though: Release is "your code's optimizations off, still debugger-steppable,"
+**not** a full Debug environment — `#if DEBUG` code is compiled out,
+`SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG` is unset, and assertions are
+disabled.
+
+If you additionally want **your own app code to stay unoptimized/debuggable**
+while doing that Release run — which is what this demo does, to make the
+"the DSP core is fast, only my own glue code is unoptimized" split visible —
+the natural first attempt is to set `SWIFT_OPTIMIZATION_LEVEL: "-O"`
+project-wide for the **Debug** configuration, then override it back to
+`-Onone` on the app targets. That attempt does **not** work:
 
 > Empirically verified (build log, `xcodebuild ... -configuration Debug`,
 > grepping the `swiftc` invocations per module): a project-level Debug
@@ -61,14 +86,21 @@ then override it back to `-Onone` on the app targets — does **not** work:
 > `Debug`.
 
 The setting **that does work** rides on that same fact from the other side:
-run the **Release** configuration (where SwiftySynth genuinely gets `-O`,
+stay on the **Release** configuration (where SwiftySynth genuinely gets `-O`,
 as confirmed by the same build-log check), and add a **target-level**
 override forcing only the app's own target back to `-Onone` for Release.
 Target-level overrides *do* reach ordinary targets — that's the mechanism
 above that failed for the *package*, but works fine for *your own code*.
+Keep in mind this still doesn't turn Release into a Debug environment (see
+the caveat above) — it only gets your own target's code back to unoptimized,
+debugger-steppable codegen; `#if DEBUG` blocks, assertions, and the build
+badge are still governed by the Release configuration, not by this override.
 
-`Examples/Apple/project.yml` (already applied to both `SwiftySynthExample`
-and `SwiftySynthExampleMac`):
+**This app hardcodes that override directly on its own Release
+configuration** in `Examples/Apple/project.yml` (already applied to both
+`SwiftySynthExample` and `SwiftySynthExampleMac`, marked `DEMO-ONLY` in the
+YAML comments), specifically so that a plain `xcodebuild -configuration
+Release` on this repo reproduces the fix numbers with zero extra setup:
 
 ```yaml
 targets:
@@ -76,12 +108,20 @@ targets:
     settings:
       configs:
         Release:
+          # DEMO-ONLY -- see the production warning below before copying
+          # this onto a shipping app's archive configuration.
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"   # keep the APP debuggable;
           # SwiftySynth still builds -O because the configuration is Release.
 ```
 
-Then build/run the **Release** configuration when you want SwiftySynth fast
-and your own code debuggable (Xcode: Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸
+> **This is safe here because this example never ships/archives.** For any
+> app you actually distribute, putting `-Onone` on the same Release
+> configuration you archive with will ship an **unoptimized production
+> binary**. See "For swift-sheet-music / Folino-iOS" below for the
+> production-safe way to get the same effect.
+
+Build/run the **Release** configuration when you want SwiftySynth fast and
+your own code debuggable (Xcode: Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸
 Build Configuration: Release; or `xcodebuild -configuration Release`).
 Verified by build-log grep (`-module-name SwiftySynth -O` /
 `-module-name SwiftySynthExampleMac -Onone`) and by the meter numbers in the
@@ -98,9 +138,29 @@ Do **not** add `.unsafeFlags(["-O"])` to SwiftySynth's own `Package.swift`: it
 would fix the build but make the library unusable as a versioned (`from:`)
 dependency for everyone else.
 
-For swift-sheet-music / Folino-iOS: the same limitation applies to any local
-or remote SwiftPM dependency. Apply the same target-level
-`SWIFT_OPTIMIZATION_LEVEL: "-Onone"` override on your own app target(s) for
-the **Release** configuration in their `project.yml` / Xcode build settings,
-and use a Release run (not Debug) whenever you need the dependency's DSP/hot
-path to run at full speed with your own code still debuggable.
+### For swift-sheet-music / Folino-iOS
+
+The same SwiftPM-package-ignores-Debug-settings limitation applies to any
+local or remote dependency, so the same two-step guidance applies — but
+**Folino ships to the App Store, and its Release configuration is the
+archive configuration**, so the ordering matters:
+
+1. **Primary recommendation:** to develop/test with a working (non-cliff)
+   audio path, **run the Release configuration.** That alone is what makes
+   the SwiftPM dependency compile `-O` — no `project.yml` change is required
+   for this step. Remember it's "your code's optimizations off," not a full
+   Debug environment (see the caveat above).
+2. **Optional refinement:** if you also want your own app code to stay
+   `-Onone`/debuggable during those Release runs, that's a target-level
+   `SWIFT_OPTIMIZATION_LEVEL: "-Onone"` override — but it **must not** land
+   on the same Release configuration you archive/submit with, or the App
+   Store build ships unoptimized. Scope it to one of:
+   - a **dedicated local, non-distribution configuration** duplicated from
+     Release (e.g. `Debug-Optimized` or `Profile`) that only your own Run
+     scheme ever selects, with the `-Onone` override on that duplicate; or
+   - an **uncommitted local `.xcconfig`** (outside version control) applied
+     only to your personal development builds.
+
+   Do **not** commit `-Onone` directly on Folino's real, archived Release
+   configuration the way this demo app does on its own — this example gets
+   away with it only because it never ships/archives.

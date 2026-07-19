@@ -28,15 +28,25 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
       configs:
         Release:
-          # See "The fix" in Examples/README.md: project-level Debug
-          # SWIFT_OPTIMIZATION_LEVEL does NOT reach a local (path:) SwiftPM
-          # dependency in this Xcode toolchain -- verified empirically, the
-          # package always compiles -Onone under the "Debug" configuration
-          # name regardless of inherited settings. Riding the Release
-          # configuration (where the package genuinely gets -O) and forcing
-          # just this app target back to -Onone is the working alternative:
-          # SwiftySynth optimized, this target's own code debuggable.
+          # DEMO-ONLY, see "The fix" in Examples/README.md: project-level
+          # Debug SWIFT_OPTIMIZATION_LEVEL does NOT reach a local (path:)
+          # SwiftPM dependency in this Xcode toolchain -- verified
+          # empirically, the package always compiles -Onone under the
+          # "Debug" configuration name regardless of inherited settings.
+          # Riding the Release configuration (where the package genuinely
+          # gets -O) and forcing just this app target back to -Onone is the
+          # working alternative, and this app intentionally keeps it here so
+          # a plain `xcodebuild -configuration Release` reproduces the fix.
+          #
+          # DO NOT copy this onto a shipping app's archive/App-Store Release
+          # configuration -- it would ship an unoptimized (-Onone) PRODUCTION
+          # binary. For a real app, either duplicate Release as a dedicated
+          # local, non-distribution configuration (e.g. "Debug-Optimized" /
+          # "Profile") and put this override there instead, or apply it via
+          # an uncommitted local .xcconfig -- never on the same Release
+          # configuration you archive with.
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    scheme: {}
     sources:
       - path: SwiftySynthExample
         excludes:
@@ -65,10 +75,13 @@ targets:
         CODE_SIGN_IDENTITY: "-"
       configs:
         Release:
-          # See Examples/README.md "The fix" -- same rationale as the iOS
-          # target above: keep this app target -Onone while SwiftySynth
-          # builds -O under the Release configuration name.
+          # DEMO-ONLY -- see Examples/README.md "The fix" and the same
+          # rationale + production warning as the iOS target above: keep
+          # this app target -Onone while SwiftySynth builds -O under the
+          # Release configuration name. DO NOT copy this onto a shipping
+          # app's archive Release configuration.
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    scheme: {}
     sources:
       - path: SwiftySynthExample
         excludes:
