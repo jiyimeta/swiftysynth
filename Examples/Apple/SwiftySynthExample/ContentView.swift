@@ -1,9 +1,11 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var engine = SynthEngine()
     @State private var snapshot = RenderStats.Snapshot(
         currentPercent: 0, maxPercent: 0, activeVoices: 0)
+    @State private var showingImporter = false
 
     private let ticker = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
@@ -22,10 +24,13 @@ struct ContentView: View {
             Stepper("layers: \(engine.layerCount)", value: $engine.layerCount, in: 1...8)
                 .font(.callout)
 
-            Button(engine.isPlaying ? "Stop" : "Play") {
-                engine.isPlaying ? engine.stop() : engine.play()
+            HStack {
+                Button(engine.isPlaying ? "Stop" : "Play") {
+                    engine.isPlaying ? engine.stop() : engine.play()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Open MIDI…") { showingImporter = true }
             }
-            .buttonStyle(.borderedProminent)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("SoundFont: \(engine.soundFontName ?? "— (drop one into Sounds/)")")
@@ -45,6 +50,12 @@ struct ContentView: View {
             } else if !engine.isPlaying {
                 snapshot = RenderStats.Snapshot(currentPercent: 0, maxPercent: 0, activeVoices: 0)
             }
+        }
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.midi]) { result in
+            guard case .success(let url) = result else { return }
+            let didAccess = url.startAccessingSecurityScopedResource()
+            defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+            engine.loadMidi(url: url)
         }
     }
 
