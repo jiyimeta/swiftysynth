@@ -1,5 +1,10 @@
 name: SwiftySynthExample
 
+configs:
+  Debug: debug
+  Release: release
+  DevOptimized: release
+
 options:
   developmentLanguage: en
   deploymentTarget:
@@ -46,6 +51,10 @@ targets:
           # an uncommitted local .xcconfig -- never on the same Release
           # configuration you archive with.
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        DevOptimized:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG"
+          GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1 $(inherited)"
     scheme: {}
     sources:
       - path: SwiftySynthExample
@@ -81,6 +90,10 @@ targets:
           # Release configuration name. DO NOT copy this onto a shipping
           # app's archive Release configuration.
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        DevOptimized:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG"
+          GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1 $(inherited)"
     scheme: {}
     sources:
       - path: SwiftySynthExample

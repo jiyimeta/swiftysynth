@@ -138,6 +138,59 @@ Do **not** add `.unsafeFlags(["-O"])` to SwiftySynth's own `Package.swift`: it
 would fix the build but make the library unusable as a versioned (`from:`)
 dependency for everyone else.
 
+### DevOptimized — recommended development configuration
+
+`Apple/project.yml` also ships a third Xcode configuration, `DevOptimized`
+(type: `release`), that gets you both halves of "The fix" above on every
+day-to-day Run without remembering to swap configurations: it preserves
+`#if DEBUG` / Swift `assert()`/`precondition()` and keeps your own app code
+`-Onone` (debuggable), **while** SwiftySynth (the local SwiftPM dependency)
+still compiles `-O` — Xcode decides a local package's optimization purely
+from the build configuration's **type** (`debug` → `-Onone`, `release` →
+`-O`), so any config typed `release` gets the dependency optimized,
+regardless of what you name it:
+
+```yaml
+configs:
+  Debug: debug
+  Release: release
+  DevOptimized: release
+
+targets:
+  SwiftySynthExample:      # and SwiftySynthExampleMac, same block
+    settings:
+      configs:
+        DevOptimized:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG"
+          GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1 $(inherited)"
+```
+
+Verified on a fresh `-derivedDataPath` (rules out stale module-cache
+effects) by build-log grep on the `swiftc` invocations:
+`-module-name SwiftySynth -O` / `-module-name SwiftySynthExampleMac -Onone`
+with `-DDEBUG` / `-Xcc -DDEBUG=1` active.
+
+**Naming caveat:** name the extra configuration anything that does **not**
+contain the substring `Debug`. A `release`-typed configuration literally
+named `Debug-Optimized` failed to build in this Xcode toolchain (`error:
+unable to resolve module dependency: 'SwiftySynth'` / "module file ... built
+for incompatible target"), while the identical setup renamed to
+`DevOptimized` built clean on a fresh derived-data path. The failure tracks
+the **name**, not the extra config itself — a second `release`-typed
+configuration is fine as long as its name doesn't contain "Debug".
+
+(`ENABLE_NS_ASSERTIONS` — the Objective-C `NSAssert` toggle — still reads
+`NO` under `DevOptimized`, inherited from the `release` config type; this app
+is pure Swift so it doesn't matter here, but if you add Objective-C code and
+need `NSAssert` too, add `ENABLE_NS_ASSERTIONS: YES` to the same
+target-level override block.)
+
+Build/run it via Xcode: Product ▸ Scheme ▸ Edit Scheme… ▸ Run ▸ Build
+Configuration: `DevOptimized`; or `xcodebuild -configuration DevOptimized`.
+Plain `Debug` and `Release` are unaffected by adding this configuration
+(verified: both still build clean on a fresh derived-data path).
+
 ### For swift-sheet-music / Folino-iOS
 
 The same SwiftPM-package-ignores-Debug-settings limitation applies to any
@@ -156,8 +209,11 @@ archive configuration**, so the ordering matters:
    on the same Release configuration you archive/submit with, or the App
    Store build ships unoptimized. Scope it to one of:
    - a **dedicated local, non-distribution configuration** duplicated from
-     Release (e.g. `Debug-Optimized` or `Profile`) that only your own Run
-     scheme ever selects, with the `-Onone` override on that duplicate; or
+     Release (e.g. `DevOptimized` or `Profile` — see "DevOptimized" above)
+     that only your own Run scheme ever selects, with the `-Onone` override
+     on that duplicate. Avoid any name containing "Debug" — a `release`-typed
+     configuration named `Debug-Optimized` failed to build in this Xcode
+     toolchain (verified); or
    - an **uncommitted local `.xcconfig`** (outside version control) applied
      only to your personal development builds.
 
