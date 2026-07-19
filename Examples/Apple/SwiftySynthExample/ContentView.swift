@@ -1,16 +1,25 @@
 import SwiftUI
 
 struct ContentView: View {
-    private let soundFont = ResourceLocator.soundFontURL()
-    private let midi = ResourceLocator.sampleMidiURL()
+    @StateObject private var engine = SynthEngine()
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             Text("SwiftySynth Example").font(.title2).bold()
-            Text("SoundFont: \(soundFont?.lastPathComponent ?? "— (drop one into Sounds/)")")
-            Text("MIDI: \(midi?.lastPathComponent ?? "—")")
+            Button(engine.isPlaying ? "Stop" : "Play") {
+                engine.isPlaying ? engine.stop() : engine.play()
+            }
+            .buttonStyle(.borderedProminent)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("SoundFont: \(engine.soundFontName ?? "— (drop one into Sounds/)")")
+                Text("MIDI: \(engine.midiName ?? "—")")
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            if let msg = engine.errorMessage {
+                Text(msg).font(.caption).foregroundStyle(.red).multilineTextAlignment(.center)
+            }
         }
-        .font(.callout)
         .padding()
+        .frame(maxWidth: 420)
     }
 }
