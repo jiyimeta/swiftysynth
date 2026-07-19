@@ -19,6 +19,9 @@ struct ContentView: View {
             }
             .font(.caption).monospacedDigit().foregroundStyle(.secondary)
 
+            Stepper("layers: \(engine.layerCount)", value: $engine.layerCount, in: 1...8)
+                .font(.callout)
+
             Button(engine.isPlaying ? "Stop" : "Play") {
                 engine.isPlaying ? engine.stop() : engine.play()
             }
