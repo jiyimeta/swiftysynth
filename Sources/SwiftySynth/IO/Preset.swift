@@ -195,12 +195,18 @@ public final class Preset {
             // zone and it is the global one, there are zero local zones and
             // the region list is empty — matching C#'s
             // `new PresetRegion[zoneSpan.Length - 1]` with length 0.
-            let global = zones[0].generators
+            let globalZone = zones[0]
             var regions: [PresetRegion] = []
             regions.reserveCapacity(zones.count - 1)
             for i in 1..<zones.count {
+                let modulators = ModulatorResolver.resolvePreset(
+                    global: globalZone.modulators, local: zones[i].modulators
+                )
                 regions.append(
-                    try PresetRegion(global: global, local: zones[i].generators, instruments: instruments)
+                    try PresetRegion(
+                        global: globalZone.generators, local: zones[i].generators, instruments: instruments,
+                        modulators: modulators
+                    )
                 )
             }
             return regions
@@ -209,8 +215,12 @@ public final class Preset {
             var regions: [PresetRegion] = []
             regions.reserveCapacity(zones.count)
             for zone in zones {
+                let modulators = ModulatorResolver.resolvePreset(global: [], local: zone.modulators)
                 regions.append(
-                    try PresetRegion(global: Zone.empty.generators, local: zone.generators, instruments: instruments)
+                    try PresetRegion(
+                        global: Zone.empty.generators, local: zone.generators, instruments: instruments,
+                        modulators: modulators
+                    )
                 )
             }
             return regions
@@ -241,6 +251,15 @@ public final class PresetRegion {
     /// value at `SetParameter` time), indexed by `GeneratorType.rawValue`.
     private let gs: [Int16]
 
+    /// The preset-level note-on modulator set resolved for this region (design spec §5,
+    /// `ModulatorResolver.resolvePreset`): the owning preset's global- then local-zone modulators,
+    /// deduped and global/local-supersession-resolved. Additive combination with the paired
+    /// `InstrumentRegion.modulators` happens at pair time (`ModulatorResolver.addPreset`, Task 8's
+    /// `RegionPair`) — this region never applies its own modulators standalone. Empty for any caller
+    /// that doesn't pass `modulators:`. No C# counterpart — new plumbing for the optional
+    /// note-on-modulator feature.
+    var modulators: [Modulator] = []
+
     /// Preset-generator default values: all zero (relative-offset neutral)
     /// except the full-range key/velocity defaults. Mirrors the field
     /// initializers in `PresetRegion`'s private parameterless constructor
@@ -259,11 +278,17 @@ public final class PresetRegion {
     /// constructor, including its generator-application order: (zero)
     /// defaults → global zone → local zone.
     ///
+    /// `modulators:` is the already-resolved preset-level note-on modulator set for this region
+    /// (`ModulatorResolver.resolvePreset`, computed by `Preset.buildRegions` from the owning
+    /// global/local zones' own modulator slices) — like `InstrumentRegion`, combining is
+    /// identity-based supersession (§5), not a per-slot overwrite, so it is not folded into the
+    /// generator-application loop above. Defaults to `[]` for callers that don't pass it.
+    ///
     /// Note: C#'s constructor threads the owning `Preset` through only to
     /// name-qualify the invalid-instrument-ID error message; this task's
     /// pinned interface has no such parameter, so the message here is
     /// generic instead (the thrown error type/condition is unchanged).
-    init(global: [Generator], local: [Generator], instruments: [Instrument]) throws {
+    init(global: [Generator], local: [Generator], instruments: [Instrument], modulators: [Modulator] = []) throws {
         var gs = PresetRegion.defaultGs
 
         for generator in global {
@@ -280,6 +305,7 @@ public final class PresetRegion {
 
         self.gs = gs
         self.instrument = instruments[id]
+        self.modulators = modulators
     }
 
     /// Mirrors `SetParameter`: unknown generator types are ignored. C#

@@ -105,10 +105,12 @@ final class SoundFontParameters {
             throw SwiftySynthError.invalidSoundFont("The SHDR sub-chunk was not found.")
         }
 
-        let instrumentZones = try Zone.create(infos: instrumentBag, generators: instrumentGenerators)
+        let instrumentZones = try Zone.create(
+            infos: instrumentBag, generators: instrumentGenerators, modulators: instrumentModulators
+        )
         let instruments = try Instrument.create(infos: instrumentInfos, zones: instrumentZones, samples: sampleHeaders)
 
-        let presetZones = try Zone.create(infos: presetBag, generators: presetGenerators)
+        let presetZones = try Zone.create(infos: presetBag, generators: presetGenerators, modulators: presetModulators)
         let presets = try Preset.create(infos: presetInfos, zones: presetZones, instruments: instruments)
 
         self.sampleHeaders = sampleHeaders

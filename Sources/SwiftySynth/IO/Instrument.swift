@@ -150,12 +150,18 @@ public final class Instrument {
             // zone and it is the global one, there are zero local zones and
             // the region list is empty — matching C#'s
             // `new InstrumentRegion[zoneSpan.Length - 1]` with length 0.
-            let global = zones[0].generators
+            let globalZone = zones[0]
             var regions: [InstrumentRegion] = []
             regions.reserveCapacity(zones.count - 1)
             for i in 1..<zones.count {
+                let modulators = ModulatorResolver.resolveInstrument(
+                    global: globalZone.modulators, local: zones[i].modulators
+                )
                 regions.append(
-                    try InstrumentRegion(global: global, local: zones[i].generators, samples: samples)
+                    try InstrumentRegion(
+                        global: globalZone.generators, local: zones[i].generators, samples: samples,
+                        modulators: modulators
+                    )
                 )
             }
             return regions
@@ -164,8 +170,12 @@ public final class Instrument {
             var regions: [InstrumentRegion] = []
             regions.reserveCapacity(zones.count)
             for zone in zones {
+                let modulators = ModulatorResolver.resolveInstrument(global: [], local: zone.modulators)
                 regions.append(
-                    try InstrumentRegion(global: Zone.empty.generators, local: zone.generators, samples: samples)
+                    try InstrumentRegion(
+                        global: Zone.empty.generators, local: zone.generators, samples: samples,
+                        modulators: modulators
+                    )
                 )
             }
             return regions
@@ -193,6 +203,13 @@ public final class InstrumentRegion {
     /// Raw generator values (widened to `Int16` from the `UInt16` wire
     /// value at `SetParameter` time), indexed by `GeneratorType.rawValue`.
     private let gs: [Int16]
+
+    /// The effective note-on modulator set resolved for this region (design spec §5,
+    /// `ModulatorResolver.resolveInstrument`): SF2 defaults, overridden/extended by the owning
+    /// instrument's global- then local-zone modulators. Empty for any caller that doesn't pass
+    /// `modulators:` (mirrors `Zone.modulators`'s own empty-by-default shape). No C# counterpart —
+    /// new plumbing for the optional note-on-modulator feature.
+    var modulators: [Modulator] = []
 
     /// SF2-spec default generator values, applied before any zone
     /// generators. Mirrors the field initializers in `InstrumentRegion`'s
@@ -229,11 +246,18 @@ public final class InstrumentRegion {
     /// constructor, including its generator-application order: SF2 defaults
     /// → global zone → local zone.
     ///
+    /// `modulators:` is the already-resolved effective note-on modulator set for this region
+    /// (`ModulatorResolver.resolveInstrument`, computed by `Instrument.buildRegions` from the owning
+    /// global/local zones' own modulator slices) — unlike generators, it is not combined inside this
+    /// initializer, since modulator combining is identity-based supersession (§5), not a per-slot
+    /// overwrite. Defaults to `[]` for callers that don't pass it (e.g. tests exercising only
+    /// generators).
+    ///
     /// Note: C#'s constructor threads the owning `Instrument` through only
     /// to name-qualify the invalid-sample-ID error message; this task's
     /// pinned interface has no such parameter, so the message here is
     /// generic instead (the thrown error type/condition is unchanged).
-    init(global: [Generator], local: [Generator], samples: [SampleHeader]) throws {
+    init(global: [Generator], local: [Generator], samples: [SampleHeader], modulators: [Modulator] = []) throws {
         var gs = InstrumentRegion.defaultGs
 
         for generator in global {
@@ -250,6 +274,7 @@ public final class InstrumentRegion {
 
         self.gs = gs
         self.sample = samples[id]
+        self.modulators = modulators
     }
 
     /// Mirrors `SetParameter`: unknown generator types are ignored. C#
