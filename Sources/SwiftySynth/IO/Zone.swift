@@ -71,10 +71,9 @@ struct ZoneInfo {
     }
 }
 
-/// A SoundFont zone: the slice of `generators` that applies within one
-/// preset/instrument bag entry. Modulators are parsed (via `ZoneInfo`'s
-/// index/count bookkeeping) but not carried on `Zone` — pmod/imod are
-/// parsed-and-skipped for this spike's scope, matching `Zone.cs` exactly.
+/// A SoundFont zone: the slice of `generators` (and, for the optional
+/// note-on-modulator feature, `modulators`) that applies within one
+/// preset/instrument bag entry.
 ///
 /// Ported from `Zone.cs` (MeltySynth, MIT License — see NOTICE). C# models
 /// this as a `struct` wrapping an `ArraySegment<Generator>`; the Swift port
@@ -82,6 +81,13 @@ struct ZoneInfo {
 /// slice-copy instead of a segment view.
 final class Zone {
     let generators: [Generator]
+
+    /// This zone's modulator slice (`pmod`/`imod`), cut from the parsed
+    /// modulator array using `ZoneInfo.modulatorIndex`/`modulatorCount`
+    /// (full-port spec §2). Empty for callers that don't pass modulators
+    /// (`Zone(generators:)`, `Zone.empty`, and any `Zone.create` call that
+    /// omits `modulators:`).
+    let modulators: [Modulator]
 
     /// The empty zone, used as the base setting when an instrument/preset has
     /// no global zone. Mirrors `Zone.Empty` in `Zone.cs`, which is itself a
@@ -91,11 +97,12 @@ final class Zone {
     /// global state" check for this non-`Sendable` class.
     static var empty: Zone { Zone(generators: []) }
 
-    init(generators: [Generator]) {
+    init(generators: [Generator], modulators: [Modulator] = []) {
         self.generators = generators
+        self.modulators = modulators
     }
 
-    private init(info: ZoneInfo, generators: [Generator]) throws {
+    private init(info: ZoneInfo, generators: [Generator], modulators: [Modulator]) throws {
         let start = info.generatorIndex
         let count = info.generatorCount
         // The bag indices come straight from raw pbag/ibag data and are not
@@ -108,11 +115,26 @@ final class Zone {
             throw SwiftySynthError.invalidSoundFont("The zone contains an invalid generator range.")
         }
         self.generators = Array(generators[start..<(start + count)])
+
+        let mStart = info.modulatorIndex
+        let mCount = info.modulatorCount
+        // Unlike the generator-range guard above, this is deliberately
+        // non-throwing (full-port spec §2, deviation from SF2 §7.3/§7.7): a
+        // font with a corrupt wModNdx loads fine today because nothing
+        // consumes those indices, and this feature must not turn that into a
+        // load failure. An out-of-range slice just yields no modulators for
+        // this zone instead of rejecting the whole font.
+        if mStart >= 0, mCount >= 0, mStart + mCount <= modulators.count {
+            self.modulators = Array(modulators[mStart..<(mStart + mCount)])
+        } else {
+            self.modulators = []
+        }
     }
 
-    /// Slices `generators` into zones according to `infos`. The last info
-    /// record is always the terminator and produces no zone.
-    static func create(infos: [ZoneInfo], generators: [Generator]) throws -> [Zone] {
+    /// Slices `generators` (and, if present, `modulators`) into zones
+    /// according to `infos`. The last info record is always the terminator
+    /// and produces no zone.
+    static func create(infos: [ZoneInfo], generators: [Generator], modulators: [Modulator] = []) throws -> [Zone] {
         guard infos.count > 1 else {
             throw SwiftySynthError.invalidSoundFont("No valid zone was found.")
         }
@@ -120,7 +142,7 @@ final class Zone {
         var zones: [Zone] = []
         zones.reserveCapacity(infos.count - 1)
         for i in 0..<(infos.count - 1) {
-            zones.append(try Zone(info: infos[i], generators: generators))
+            zones.append(try Zone(info: infos[i], generators: generators, modulators: modulators))
         }
 
         return zones
