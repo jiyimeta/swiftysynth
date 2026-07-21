@@ -137,7 +137,7 @@ whose size is not a whole number of 10-byte records is rejected.
 | Gate | Result |
 |------|--------|
 | G1 loader equivalence | pass — exact ints/strings/counts, smpl SHA-256 match, derived floats ≤ 1e-6 vs rustysynth dump |
-| G1′ peripherals | pass — pmod/imod size-validated & discarded (unit-pinned); every GeneralUser-GS sample header decodes to a known SampleType |
+| G1′ peripherals | pass — pmod/imod parsed; invalid/malformed records skipped, never thrown (size-validated, unit-pinned); every GeneralUser-GS sample header decodes to a known SampleType |
 | G2 one-note PCM equivalence | pass — left: maxAbs 9.87e-08, worst-window RMS 1.43e-08, SNR 121.25 dB, zero-lag corr 0.99999999999955; right: maxAbs 9.13e-08, worst-window RMS 1.36e-08, SNR 121.17 dB, zero-lag corr 0.99999999999957 |
 | G2-multi multichannel dry PCM equivalence | pass — left: maxAbs 2.83e-07, SNR 124.82 dB; right: maxAbs 2.68e-07, SNR 124.96 dB (bar: ≤1e-4 / ≥80 dB) |
 | G2-fx effects equivalence | pass — component: hand-derived Freeverb comb/allpass + chorus fractional-delay invariants; e2e effects-on vs oracle: left: maxAbs 3.13e-07, SNR 122.89 dB; right: maxAbs 2.68e-07, SNR 123.11 dB (bar: unchanged dry bar ≤1e-4 / ≥80 dB) |
