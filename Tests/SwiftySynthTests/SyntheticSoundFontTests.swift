@@ -20,7 +20,34 @@ enum SyntheticSF2 {
         // Instrument-zone generators, applied in order; the last must be the
         // sampleID (53) terminator so the zone is treated as local, not
         // global. Default: sampleID = 0 only.
-        instrumentGenerators: [(type: UInt16, value: UInt16)] = [(53, 0)]
+        instrumentGenerators: [(type: UInt16, value: UInt16)] = [(53, 0)],
+        // --- Task 11 (load-compatibility & record-validity regression, design spec §2/§Testing
+        // item 6) toggles below. All default to today's shape: an `imod` sub-chunk present,
+        // carrying a single all-zero terminal record that no zone references
+        // (`instrumentModulatorRecords` empty), with the sole instrument zone's declared
+        // modulator-bag range matching whatever records are provided. ---
+        //
+        // `false` omits the `imod` sub-chunk from `pdta` entirely — the "sub-chunk absent" load-
+        // compatibility case (design spec §2: a missing `pmod`/`imod` chunk must still load, with
+        // an empty modulator list, no throw).
+        includeInstrumentModulatorChunk: Bool = true,
+        // Raw 10-byte `imod` records (`sourceOper`/`destOper`/`amount`/`amountSourceOper`/
+        // `transformOper`, little-endian — see `ModulatorChunkParseTests.record`) to place in the
+        // `imod` chunk, in order. Each must be exactly 10 bytes. Empty (default) keeps today's
+        // single-zero-record body (present but unreferenced by any zone).
+        instrumentModulatorRecords: [[UInt8]] = [],
+        // Overrides the sole instrument zone's declared modulator count (the `ibag` terminator's
+        // `modulatorIndex`, since the zone's own start is always 0). `nil` (default) uses
+        // `instrumentModulatorRecords.count`, i.e. the zone references exactly the records
+        // provided. Pass a value that doesn't match the actual record count to build a corrupt
+        // `wModNdx` (bag-range) fixture — the zone must load with an empty modulator slice, never
+        // throw (design spec §2's bag-range deviation, `ZoneModulatorSliceTests`).
+        instrumentModulatorBagCount: Int? = nil,
+        // Extra raw bytes appended to the `imod` chunk body after the records, to make its
+        // declared chunk size NOT a whole multiple of 10 (the "chunk-size malformed" case, which
+        // must throw — unlike every other toggle here). 0 (default) leaves the chunk a clean
+        // multiple of 10.
+        instrumentModulatorChunkGarbageBytes: Int = 0
     ) -> Data {
         // sdta ------------------------------------------------------------------
         var smpl = ByteWriter()
@@ -68,12 +95,25 @@ enum SyntheticSF2 {
         // regardless of how many generators populate it.
         inst.fixedString("EOI", length: 20); inst.u16(1)
 
+        let instrumentModulatorCount = instrumentModulatorBagCount ?? instrumentModulatorRecords.count
         var ibag = ByteWriter()
         ibag.u16(0); ibag.u16(0)
-        ibag.u16(UInt16(instrumentGenerators.count)); ibag.u16(0)
+        ibag.u16(UInt16(instrumentGenerators.count)); ibag.u16(UInt16(instrumentModulatorCount))
 
         var imod = ByteWriter()
-        imod.bytes([UInt8](repeating: 0, count: 10))
+        if instrumentModulatorRecords.isEmpty {
+            imod.bytes([UInt8](repeating: 0, count: 10))   // unreferenced terminal record (unchanged default)
+        } else {
+            for record in instrumentModulatorRecords {
+                precondition(record.count == 10, "each imod record must be exactly 10 bytes")
+                imod.bytes(record)
+            }
+        }
+        if instrumentModulatorChunkGarbageBytes > 0 {
+            // Pushes the declared `imod` chunk size past a whole multiple of 10 without adding a
+            // full extra record — the "chunk-size malformed" fixture.
+            imod.bytes([UInt8](repeating: 0xFF, count: instrumentModulatorChunkGarbageBytes))
+        }
 
         var igen = ByteWriter()
         for gen in instrumentGenerators { igen.u16(gen.type); igen.u16(gen.value) }
@@ -94,7 +134,9 @@ enum SyntheticSF2 {
         pdta.chunk("pgen", pgen)
         pdta.chunk("inst", inst)
         pdta.chunk("ibag", ibag)
-        pdta.chunk("imod", imod)
+        if includeInstrumentModulatorChunk {
+            pdta.chunk("imod", imod)
+        }
         pdta.chunk("igen", igen)
         pdta.chunk("shdr", shdr)
 
