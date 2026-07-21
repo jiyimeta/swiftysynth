@@ -45,6 +45,10 @@ public final class Synthesizer {
     /// `renderBlock` mixes the effects return into every block.
     public let enableReverbAndChorus: Bool
 
+    /// Whether SF2 modulator support is enabled. Plumbed but currently inert:
+    /// no rendering behavior is gated on this flag yet.
+    public let enableModulators: Bool
+
     /// The master volume. Defaults to 0.5 (`Synthesizer.cs`'s field initializer).
     public var masterVolume: Float
 
@@ -79,6 +83,7 @@ public final class Synthesizer {
         self.blockSize = settings.blockSize
         self.maximumPolyphony = settings.maximumPolyphony
         self.enableReverbAndChorus = settings.enableReverbAndChorus
+        self.enableModulators = settings.enableModulators
 
         // Preset lookup: ID = (bank << 16) | patch. First occurrence wins
         // (C# Dictionary.TryAdd), and the minimum ID becomes the default

@@ -30,11 +30,16 @@ public struct SynthesizerSettings: Sendable {
     /// exists.
     public let enableReverbAndChorus: Bool
 
+    /// Whether SF2 modulator support is enabled (default false). Plumbed but
+    /// currently inert: no behavior is gated on this flag yet.
+    public let enableModulators: Bool
+
     public init(
         sampleRate: Int,
         blockSize: Int = SynthesizerSettings.defaultBlockSize,
         maximumPolyphony: Int = SynthesizerSettings.defaultMaximumPolyphony,
-        enableReverbAndChorus: Bool = true
+        enableReverbAndChorus: Bool = true,
+        enableModulators: Bool = false
     ) throws {
         guard 16_000 <= sampleRate && sampleRate <= 192_000 else {
             throw SwiftySynthError.invalidSettings("The sample rate must be between 16000 and 192000.")
@@ -49,5 +54,6 @@ public struct SynthesizerSettings: Sendable {
         self.blockSize = blockSize
         self.maximumPolyphony = maximumPolyphony
         self.enableReverbAndChorus = enableReverbAndChorus
+        self.enableModulators = enableModulators
     }
 }
