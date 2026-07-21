@@ -52,7 +52,10 @@ struct ModulatorSource: Equatable {
     /// of bits 12...15, so this is equivalent to (and replaces) checking those bits directly — see
     /// spec §2's note on the SF2.00-era "bits 11...15" erratum, which this port deliberately does
     /// NOT follow (it would wrongly reject convex/switch, values 2 and 3).
-    let isValidCurve: Bool
+    ///
+    /// `fileprivate`, not `private`: `Modulator.isValid` (a different type, same file) reads this
+    /// on both `source` and `amountSource`; nothing outside `Modulator.swift` needs it.
+    fileprivate let isValidCurve: Bool
 
     init(rawValue: UInt16) {
         let index = Int(rawValue & 0x7F)
@@ -110,6 +113,18 @@ struct ModulatorSource: Equatable {
         case .cc, .other:
             return false
         }
+    }
+
+    /// True when this source is the SF2 "Link" general controller (CC flag clear, index 127 —
+    /// §8.2.1's general-controller table). A linked source's value comes from another modulator's
+    /// output, not an actual MIDI signal; full-port spec §2/§7.4/§9.5.4 requires a modulator using
+    /// Link as either its source or its amount-source to be rejected outright. This is distinct
+    /// from the `destOper` bit-15 "linked destination" flag (`Modulator.isLinkedDestination`) —
+    /// §8.2.1 lists 127 as a real (if unusual) general-controller enumerator, so it is NOT already
+    /// caught by "unlisted values are reserved/ignored", and the CC-flag-clear guard here keeps a
+    /// genuine MIDI CC 127 (already illegal via the CC-index rule) from being conflated with it.
+    var isLink: Bool {
+        !isCC && controller == .other(index: 127)
     }
 }
 
@@ -171,13 +186,15 @@ struct Modulator {
     let transform: ModulatorTransformOp
 
     /// False when `transformOper` was neither 0 (linear) nor 2 (absolute value) — an unknown
-    /// transform enumerator (SF2 §8.3), one of `isValid`'s skip rules (spec §2).
-    let isValidTransform: Bool
+    /// transform enumerator (SF2 §8.3), one of `isValid`'s skip rules (spec §2). `private`: only
+    /// `Modulator`'s own `read`/`isValid` need it.
+    private let isValidTransform: Bool
 
     /// True when `destOper` bit 15 (the "linked destination" flag, SF2 §9.5.4) was set. A linked
     /// modulator's low 15 bits index another modulator's amount-source rather than a generator, so
-    /// `destination` is `nil` whenever this is true.
-    let isLinkedDestination: Bool
+    /// `destination` is `nil` whenever this is true. `private`: only `Modulator`'s own
+    /// `read`/`isValid` need it.
+    private let isLinkedDestination: Bool
 
     /// Reads one 10-byte `pmod`/`imod` record.
     static func read(from reader: BinaryReader) throws -> Modulator {
@@ -228,14 +245,17 @@ struct Modulator {
 
     /// False when any skip rule (full-port spec §2) fires: an illegal/reserved CC-flagged source
     /// index on either source; an unknown source curve type (value > 3) on either source; an
-    /// unknown transform enumerator; a linked source or destination; or a destination that is not
-    /// a modulator-eligible Value Generator (SF2 §8.1.1).
+    /// unknown transform enumerator; a linked source, linked amount-source, or linked destination
+    /// (SF2 §7.4/§8.2.1/§9.5.4 — a "Link" general controller, CC clear + index 127, on either
+    /// source is rejected the same as a `destOper` bit-15 linked destination); or a destination
+    /// that is not a modulator-eligible Value Generator (SF2 §8.1.1).
     var isValid: Bool {
         guard !isLinkedDestination, let destination, destination.isModulatorDestination else {
             return false
         }
         guard isValidTransform else { return false }
         guard source.isValidCurve, amountSource.isValidCurve else { return false }
+        guard !source.isLink, !amountSource.isLink else { return false }
         guard !Modulator.hasIllegalCCIndex(source), !Modulator.hasIllegalCCIndex(amountSource) else {
             return false
         }

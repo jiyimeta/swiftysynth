@@ -67,4 +67,41 @@ struct ModulatorDecodeTests {
         let m = try Modulator.read(from: record(src: 0x0502, dest: 53, amount: 100, amtSrc: 0, transform: 0))
         #expect(!m.isValid)
     }
+
+    /// CC flag set (bit 7) with an illegal general-MIDI-CC source index — 0 (Bank Select MSB) or
+    /// 120 (All Sound Off), from the §8.2.1 illegal-CC list — is invalid regardless of an
+    /// otherwise well-formed record.
+    @Test func illegalCCSourceIndexIsInvalid() throws {
+        let index0 = try Modulator.read(from: record(src: 0x0080, dest: 48, amount: 100, amtSrc: 0, transform: 0))
+        let index120 = try Modulator.read(from: record(src: 0x00F8, dest: 48, amount: 100, amtSrc: 0, transform: 0))
+        #expect(!index0.isValid, "CC index 0 is illegal")
+        #expect(!index120.isValid, "CC index 120 is illegal")
+    }
+
+    /// A record whose `source` is well-formed (velocity) but whose `amountSource` fails a skip
+    /// rule (here: CC-flagged index 32, a reserved LSB-controller index) must still be invalid —
+    /// both sources gate validity independently.
+    @Test func invalidAmountSourceMakesRecordInvalid() throws {
+        let m = try Modulator.read(from: record(src: 0x0002, dest: 48, amount: 100, amtSrc: 0x00A0, transform: 0))
+        #expect(!m.isValid, "amountSource CC index 32 is illegal/reserved")
+    }
+
+    /// SF2 §7.4/§8.2.1/§9.5.4: the "Link" general controller (CC flag clear, index 127) as the
+    /// `source` makes a modulator invalid. `destOper` bit 15 alone does not catch this — Link is a
+    /// listed general-controller enumerator (not an unlisted/reserved index), so it needs its own
+    /// check.
+    @Test func linkedSourceIsInvalid() throws {
+        let m = try Modulator.read(from: record(src: 0x007F, dest: 48, amount: 100, amtSrc: 0, transform: 0))
+        #expect(!m.isValid)
+        #expect(!m.isNoteOn)
+    }
+
+    /// Same as `linkedSourceIsInvalid`, but Link is the `amountSource` instead: `src=velocity,
+    /// amtSrc=Link` must not slip through as a valid, note-on modulator with an undefined
+    /// amount-source mapping.
+    @Test func linkedAmountSourceIsInvalid() throws {
+        let m = try Modulator.read(from: record(src: 0x0002, dest: 48, amount: 100, amtSrc: 0x007F, transform: 0))
+        #expect(!m.isValid)
+        #expect(!m.isNoteOn)
+    }
 }
