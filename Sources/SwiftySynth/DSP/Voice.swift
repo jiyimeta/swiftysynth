@@ -126,26 +126,83 @@ final class Voice {
     /// Mirrors `Voice.Start` with `RegionEx.cs`'s `RegionPair`-typed helpers
     /// folded in inline. Copy every constant/order exactly — this is the
     /// equivalence-critical entry point for a voice's entire parameter set.
-    func start(region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int) {
+    ///
+    /// `enableModulators` (design spec §6, optional SF2 note-on modulator support) gates a second,
+    /// independent computation of `noteGain`/`cutoff`: ON folds `RegionPair.modulatorSum`'s resolved
+    /// note-on modulator contributions into the raw `initialAttenuation`/`initialFilterCutoffFrequency`
+    /// generators (each clamped to its SF2 §8.1.3 range) before unit conversion, and — since SF2
+    /// default #1 (velocity -> initialAttenuation) is always inside that modulator sum unless a font
+    /// supersedes it — REPLACES the hardcoded `2 * linearToDecibels(velocity/127)` velocity term rather
+    /// than adding to it (adding both would double-count velocity attenuation). Defaults to `false` so
+    /// every existing call site (`VoiceTests`, `VoiceCollectionTests`) is unaffected. The OFF branch
+    /// below is the EXACT pre-existing body, untouched, preserving every MeltySynth-equivalence oracle
+    /// vector (design spec's OFF-path guarantee).
+    ///
+    /// Scope note (documented partial, per design spec's "Partial fidelity" risk): this task folds
+    /// `modulatorSum` into `initialAttenuation` and `initialFilterCutoffFrequency` only — the two
+    /// destinations that fix the reported loudness/brightness bug. Other modulator-eligible generators
+    /// this method reads raw (`coarseTune`/`fineTune`, `modulationEnvelopeToPitch`/
+    /// `modulationEnvelopeToFilterCutoffFrequency`, the `modulationLfoTo*` depths) are left unmodulated
+    /// this release; applying them correctly needs each destination's own SF2 §8.1.3 clamp range
+    /// (and, for `fineTune`, care not to fold the modulator sum into `sample.pitchCorrection`, which
+    /// `RegionPair.fineTune` already bakes in) — deferred rather than guessed at.
+    func start(
+        region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int,
+        enableModulators: Bool = false
+    ) {
         self.exclusiveClass = region.exclusiveClass
         self.channel = channel
         self.channelInfo = channelInfo
         self.key = key
         self.velocity = velocity
 
-        if velocity > 0 {
-            // According to the Polyphone's implementation, the initial attenuation should be reduced to 40%.
-            // I'm not sure why, but this indeed improves the loudness variability.
-            let sampleAttenuation = 0.4 * region.initialAttenuation
+        if enableModulators {
+            // ON path (design spec §6). `filterAttenuation` is a MeltySynth-ism (compensates this
+            // filter realization's resonance peak), not an SF2 quantity — kept as-is on purpose
+            // (design spec's "Deliberate carry-overs"), so it reads `region.initialFilterQ` directly,
+            // with no modulator sum folded in.
             let filterAttenuation = 0.5 * region.initialFilterQ
-            let decibels = 2 * SoundFontMath.linearToDecibels(Float(velocity) / 127) - sampleAttenuation - filterAttenuation
-            noteGain = SoundFontMath.decibelsToLinear(decibels)
-        } else {
-            noteGain = 0
-        }
 
-        cutoff = region.initialFilterCutoffFrequency
-        resonance = SoundFontMath.decibelsToLinear(region.initialFilterQ)
+            if velocity > 0 {
+                let attenuationCentibels = min(
+                    max(
+                        Float(region.rawGenerator(.initialAttenuation))
+                            + region.modulatorSum(destination: .initialAttenuation, velocity: velocity, key: key),
+                        0
+                    ),
+                    1440
+                )
+                noteGain = SoundFontMath.decibelsToLinear(-(0.1 * attenuationCentibels) - filterAttenuation)
+            } else {
+                noteGain = 0
+            }
+
+            let cutoffCents = min(
+                max(
+                    Float(region.rawGenerator(.initialFilterCutoffFrequency))
+                        + region.modulatorSum(destination: .initialFilterCutoffFrequency, velocity: velocity, key: key),
+                    1500
+                ),
+                13500
+            )
+            cutoff = SoundFontMath.centsToHertz(cutoffCents)
+            resonance = SoundFontMath.decibelsToLinear(region.initialFilterQ)
+        } else {
+            // OFF path — UNCHANGED from the pre-modulator body (byte-identical).
+            if velocity > 0 {
+                // According to the Polyphone's implementation, the initial attenuation should be reduced to 40%.
+                // I'm not sure why, but this indeed improves the loudness variability.
+                let sampleAttenuation = 0.4 * region.initialAttenuation
+                let filterAttenuation = 0.5 * region.initialFilterQ
+                let decibels = 2 * SoundFontMath.linearToDecibels(Float(velocity) / 127) - sampleAttenuation - filterAttenuation
+                noteGain = SoundFontMath.decibelsToLinear(decibels)
+            } else {
+                noteGain = 0
+            }
+
+            cutoff = region.initialFilterCutoffFrequency
+            resonance = SoundFontMath.decibelsToLinear(region.initialFilterQ)
+        }
 
         vibLfoToPitch = 0.01 * Float(region.vibratoLfoToPitch)
         modLfoToPitch = 0.01 * Float(region.modulationLfoToPitch)

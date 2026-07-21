@@ -45,8 +45,13 @@ public final class Synthesizer {
     /// `renderBlock` mixes the effects return into every block.
     public let enableReverbAndChorus: Bool
 
-    /// Whether SF2 modulator support is enabled. Plumbed but currently inert:
-    /// no rendering behavior is gated on this flag yet.
+    /// Whether SF2 note-on modulator support is enabled (default false). When true, `noteOn` passes
+    /// this through to `Voice.start`, which folds each region's resolved note-on modulator sums
+    /// (velocity/keyNumber-sourced only, design spec §5) into `initialAttenuation` and
+    /// `initialFilterCutoffFrequency` before unit conversion, replacing the hardcoded
+    /// velocity-attenuation curve with SF2 default #1 (now inside the modulator sum). When false,
+    /// rendering is byte-identical to the pre-modulator engine (every MeltySynth-equivalence oracle
+    /// vector holds).
     public let enableModulators: Bool
 
     /// The master volume. Defaults to 0.5 (`Synthesizer.cs`'s field initializer).
@@ -227,7 +232,8 @@ public final class Synthesizer {
                 let voice = voices.requestNew(region: instrumentRegion, channel: channel)
                 voice.start(
                     region: regionPair, channel: channel, channelInfo: channelInfo,
-                    data: soundFont.waveData, key: key, velocity: velocity)
+                    data: soundFont.waveData, key: key, velocity: velocity,
+                    enableModulators: enableModulators)
             }
         }
     }

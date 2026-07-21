@@ -62,13 +62,24 @@ internal struct RegionPair {
         instrument.modulators + preset.modulators
     }
 
-    /// Sums `Modulator.output(velocity:key:)` over every `resolvedModulators` entry targeting
-    /// `destination` — the total note-on modulator contribution `Voice.start` (Task 9) adds to that
-    /// generator's raw/converted value.
+    /// Sums `Modulator.output(velocity:key:)` over every effective note-on modulator (instrument +
+    /// preset, the same combination `resolvedModulators` describes) targeting `destination` — the
+    /// total contribution `Voice.start` (Task 9) adds to that generator's raw value before unit
+    /// conversion.
+    ///
+    /// Deliberately does NOT read `resolvedModulators`: that computed property concatenates
+    /// `instrument.modulators + preset.modulators`, allocating a fresh `Array` on every call.
+    /// `Voice.start` runs on the render thread (design spec §8: allocation-free), so this iterates
+    /// both source arrays directly instead — same two lists, same filter/sum, zero allocation.
     internal func modulatorSum(destination: GeneratorType, velocity: Int, key: Int) -> Float {
-        resolvedModulators
-            .filter { $0.destination == destination }
-            .reduce(Float(0)) { $0 + $1.output(velocity: velocity, key: key) }
+        var sum: Float = 0
+        for modulator in instrument.modulators where modulator.destination == destination {
+            sum += modulator.output(velocity: velocity, key: key)
+        }
+        for modulator in preset.modulators where modulator.destination == destination {
+            sum += modulator.output(velocity: velocity, key: key)
+        }
+        return sum
     }
 
     // MARK: - Instrument-only (sample-scope) members
