@@ -88,13 +88,49 @@ per-voice DSP chain (oscillator, volume/modulation envelopes, both LFOs,
 resonant low-pass), 16 MIDI channels (channel 9 percussion) with CC/RPN
 state, priority voice stealing (polyphony 8–256, default 64), Freeverb
 reverb + chorus, SMF format 0/1 + General MIDI, RPG Maker / Incredible
-Machine / Final Fantasy loop markers.
+Machine / Final Fantasy loop markers, optional SF2 note-on modulator
+support (off by default — see [Modulators](#modulators)).
 
 Not supported — canonical-faithful stances, by design: `sm24` 24-bit
-samples; SMF format 2 (throws `.invalidMidiFile`); SF2 modulator
-application (`pmod`/`imod` are size-validated and discarded, exactly as
-MeltySynth does — fidelity comes from generator handling plus the effects
-bus); NRPN (ignored, as in canonical `Channel.cs`).
+samples; SMF format 2 (throws `.invalidMidiFile`); real-time SF2
+modulators, the synthesized default filter-cutoff modulator, and linked
+modulators (see [Modulators](#modulators)); NRPN (ignored, as in canonical
+`Channel.cs`).
+
+## Modulators
+
+Optional, **default OFF**. Enable via:
+
+```swift
+let settings = try SynthesizerSettings(sampleRate: 44_100, enableModulators: true)
+```
+
+**Why OFF by default.** SwiftySynth is a faithful port of MeltySynth, which
+does not implement modulators. Keeping modulators off preserves byte-identical
+output, the MeltySynth-equivalence test oracles, and SoundFont load
+compatibility — every font that loads today keeps loading, unchanged.
+
+**What IS applied when ON.** SF2 **note-on** modulators — sources limited to
+note-on velocity, note-on key number, and the constant `none` — are resolved
+at SoundFont load per the SF2 §9.5.1 combining rules (default →
+instrument-override → preset-additive, with global/local-zone supersession)
+and applied once at note start. The SF2 default velocity→`initialAttenuation`
+modulator (default #1) is included and replaces the port's hardcoded velocity
+curve. The resolved modulator sums are currently applied to two generator
+destinations: `initialAttenuation` and `initialFilterCutoffFrequency`.
+
+**Not yet supported:**
+- Real-time / continuously-varying modulators — any CC/MIDI-controller
+  source, channel or polyphonic pressure, or pitch-wheel source.
+- The synthesized SF2 default modulator #2 (velocity → filter cutoff).
+- Linked modulators.
+- Modulator application to note-on destinations other than attenuation and
+  filter cutoff — e.g. coarse/fine tune, mod-envelope, LFO depth, filter Q.
+  These are recognized and resolved but not yet applied.
+
+Invalid or unsupported modulator records, and malformed modulator bag
+indices, are skipped at load and never fail loading; a `pmod`/`imod` chunk
+whose size is not a whole number of 10-byte records is rejected.
 
 ## Gates (equivalence + safety record)
 
