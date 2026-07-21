@@ -3,7 +3,7 @@ import Foundation
 /// SF2 §8.2/§8.3 source-value transform curves plus the per-modulator note-on evaluator.
 ///
 /// New code with no MeltySynth/C# counterpart to port: MeltySynth never decodes modulator records
-/// (`Modulator.discardData` skips them wholesale), so there is nothing here to mirror — this is a
+/// (it discards them wholesale), so there is nothing here to mirror — this is a
 /// from-spec implementation (design spec §3/§4/§6). The concave/convex equations are pinned to
 /// FluidSynth's implementable forms (the SF2 §8.2.4 concave equation itself is dimensionally
 /// garbled) — see the design spec §3 for the derivation and the default-#1 identity it enables.

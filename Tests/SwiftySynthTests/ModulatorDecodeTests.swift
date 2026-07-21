@@ -4,8 +4,9 @@ import Testing
 
 /// Hermetic. `Modulator.read`/`isValid`/`isNoteOn` — the decoded modulator record + validity/
 /// note-on predicates added for the optional note-on-modulator feature (full-port spec §2). This
-/// covers only the decode + predicates; nothing yet consumes a `Modulator` (later tasks do), and
-/// `Modulator.discardData` (covered by ModulatorTests.swift) is unchanged.
+/// covers only the decode + predicates; nothing yet consumes a `Modulator` (later tasks do).
+/// `Modulator.readAll` (the `pmod`/`imod` sub-chunk reader built on top of `read`) is covered by
+/// ModulatorChunkParseTests.swift.
 struct ModulatorDecodeTests {
     /// Builds one 10-byte imod/pmod record: srcOper, destOper (generator), amount, amtSrcOper,
     /// transform.

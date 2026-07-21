@@ -2,13 +2,20 @@
 /// presets, and instruments.
 ///
 /// Ported from `SoundFontParameters.cs` (MeltySynth, MIT License — see
-/// NOTICE). Modulators (`pmod`/`imod`) are size-validated and discarded by
-/// `Modulator.discardData` — the canonical parse-and-discard behavior this
-/// port mirrors (full-port spec §2; see `Modulator.swift`).
+/// NOTICE). MeltySynth itself never decodes modulator records past the raw
+/// bytes; this port reads `pmod`/`imod` into `presetModulators` /
+/// `instrumentModulators` (`Modulator.readAll`) instead of discarding them —
+/// new plumbing for the optional note-on-modulator feature (full-port spec
+/// §2; see `Modulator.swift`). A missing `pmod`/`imod` sub-chunk leaves the
+/// corresponding array empty rather than throwing — unlike the other seven
+/// sub-chunks, these two intentionally have no mandatory-presence guard
+/// (spec §2), matching today's load behavior for fonts that omit them.
 final class SoundFontParameters {
     let sampleHeaders: [SampleHeader]
     let presets: [Preset]
     let instruments: [Instrument]
+    let presetModulators: [Modulator]
+    let instrumentModulators: [Modulator]
 
     /// Reads the whole `LIST`/`pdta` chunk: fourCC + size + `pdta` form,
     /// then iterates sub-chunks by ID until `size` bytes are consumed.
@@ -37,9 +44,11 @@ final class SoundFontParameters {
 
         var presetInfos: [PresetInfo]?
         var presetBag: [ZoneInfo]?
+        var presetModulators: [Modulator] = []
         var presetGenerators: [Generator]?
         var instrumentInfos: [InstrumentInfo]?
         var instrumentBag: [ZoneInfo]?
+        var instrumentModulators: [Modulator] = []
         var instrumentGenerators: [Generator]?
         var sampleHeaders: [SampleHeader]?
 
@@ -53,7 +62,7 @@ final class SoundFontParameters {
             case "pbag":
                 presetBag = try ZoneInfo.create(reader: reader, size: chunkSize)
             case "pmod":
-                try Modulator.discardData(reader: reader, size: chunkSize)
+                presetModulators = try Modulator.readAll(from: reader, size: chunkSize)
             case "pgen":
                 presetGenerators = try Generator.readFromChunk(reader: reader, size: chunkSize)
             case "inst":
@@ -61,7 +70,7 @@ final class SoundFontParameters {
             case "ibag":
                 instrumentBag = try ZoneInfo.create(reader: reader, size: chunkSize)
             case "imod":
-                try Modulator.discardData(reader: reader, size: chunkSize)
+                instrumentModulators = try Modulator.readAll(from: reader, size: chunkSize)
             case "igen":
                 instrumentGenerators = try Generator.readFromChunk(reader: reader, size: chunkSize)
             case "shdr":
@@ -105,5 +114,7 @@ final class SoundFontParameters {
         self.sampleHeaders = sampleHeaders
         self.presets = presets
         self.instruments = instruments
+        self.presetModulators = presetModulators
+        self.instrumentModulators = instrumentModulators
     }
 }

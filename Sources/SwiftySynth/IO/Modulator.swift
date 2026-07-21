@@ -268,14 +268,24 @@ struct Modulator {
         source.isNoteOn && amountSource.isNoteOn
     }
 
-    /// Mirrors `Modulator.DiscardData`: each modulator record is 10 bytes; a chunk size that is
-    /// not a whole number of records is structurally invalid (thrown, never trapped), otherwise
-    /// the chunk is skipped. Kept for `SoundFontParameters.swift`, which still discards every
-    /// modulator record wholesale (Task 5 switches it over to `read`/`isValid`/`isNoteOn`).
-    static func discardData(reader: BinaryReader, size: Int) throws {
-        guard size % 10 == 0 else {
+    /// Reads a whole `pmod`/`imod` sub-chunk into decoded records. Each modulator record is 10
+    /// bytes; a chunk size that is not a whole number of records — or is negative — is structurally
+    /// invalid and rejected up front (mirroring `ZoneInfo.create`'s `size >= 0` guard, Zone.swift:30)
+    /// so a corrupt chunk length can never build an inverted range and trap (never-trap invariant).
+    /// A present-but-empty chunk (size 0) yields an empty array; a missing chunk is
+    /// `SoundFontParameters`'s concern (full-port spec §2) — this reader is only ever called when
+    /// the sub-chunk is present.
+    static func readAll(from reader: BinaryReader, size: Int) throws -> [Modulator] {
+        guard size >= 0, size % 10 == 0 else {
             throw SwiftySynthError.invalidSoundFont("The modulator list is invalid.")
         }
-        try reader.skip(size)
+
+        let count = size / 10
+        var modulators: [Modulator] = []
+        modulators.reserveCapacity(min(count, reader.bytesRemaining / 10))
+        for _ in 0..<count {
+            modulators.append(try Modulator.read(from: reader))
+        }
+        return modulators
     }
 }
