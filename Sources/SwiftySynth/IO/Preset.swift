@@ -254,10 +254,11 @@ public final class PresetRegion {
     /// The preset-level note-on modulator set resolved for this region (design spec §5,
     /// `ModulatorResolver.resolvePreset`): the owning preset's global- then local-zone modulators,
     /// deduped and global/local-supersession-resolved. Additive combination with the paired
-    /// `InstrumentRegion.modulators` happens at pair time (`ModulatorResolver.addPreset`, Task 8's
-    /// `RegionPair`) — this region never applies its own modulators standalone. Empty for any caller
-    /// that doesn't pass `modulators:`. No C# counterpart — new plumbing for the optional
-    /// note-on-modulator feature.
+    /// `InstrumentRegion.modulators` happens at pair time as a plain concatenation
+    /// (`RegionPair.resolvedModulators`, Task 8) — this region never applies its own modulators
+    /// standalone, and the pair does not re-run any of `ModulatorResolver`'s dedup/supersession
+    /// machinery on this already-resolved list. Empty for any caller that doesn't pass `modulators:`.
+    /// No C# counterpart — new plumbing for the optional note-on-modulator feature.
     var modulators: [Modulator] = []
 
     /// Preset-generator default values: all zero (relative-offset neutral)

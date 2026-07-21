@@ -34,6 +34,43 @@ internal struct RegionPair {
         Int(instrument[type]) + Int(preset[type])
     }
 
+    /// Public-facing name for the same combined raw access as the private subscript above, for
+    /// callers outside this file that need the raw (unconverted) summed value — e.g. Task 9's
+    /// `Voice.start`, which adds `modulatorSum`'s output to a generator's raw value before applying
+    /// the destination-specific unit conversion.
+    internal func rawGenerator(_ type: GeneratorType) -> Int {
+        self[type]
+    }
+
+    /// The merged effective note-on modulator list for this preset+instrument pair (design spec §6):
+    /// the plain concatenation of `instrument.modulators` (already fully resolved by
+    /// `ModulatorResolver.resolveInstrument` — SF2 defaults, then instrument global/local-zone
+    /// supersession) and `preset.modulators` (already fully resolved by
+    /// `ModulatorResolver.resolvePreset` — preset global/local-zone supersession). Both lists are
+    /// each internally complete per SF2 §9.5.1; the instrument and preset levels combine additively,
+    /// not by further supersession, so concatenation is the correct (and only) combination here.
+    ///
+    /// Deliberately does NOT re-run `ModulatorResolver.addPreset`/`resolvePreset`/`dedupWithinZone` on
+    /// `preset.modulators`: those dedup by `isIdentical3` (source/destination/amount-source only,
+    /// transform-blind), so doing so would incorrectly collapse two legitimate preset-level entries
+    /// that are 3-field-identical but differ in `transform` — a case `preset.modulators` can
+    /// genuinely already contain (its own global/local supersession is 4-field, transform-sensitive).
+    /// The resulting list may contain multiple entries for the same destination (e.g. an
+    /// instrument-level and a preset-level velocity->attenuation modulator); summing those per
+    /// destination is `modulatorSum`'s job, not this property's.
+    internal var resolvedModulators: [Modulator] {
+        instrument.modulators + preset.modulators
+    }
+
+    /// Sums `Modulator.output(velocity:key:)` over every `resolvedModulators` entry targeting
+    /// `destination` — the total note-on modulator contribution `Voice.start` (Task 9) adds to that
+    /// generator's raw/converted value.
+    internal func modulatorSum(destination: GeneratorType, velocity: Int, key: Int) -> Float {
+        resolvedModulators
+            .filter { $0.destination == destination }
+            .reduce(Float(0)) { $0 + $1.output(velocity: velocity, key: key) }
+    }
+
     // MARK: - Instrument-only (sample-scope) members
 
     internal var sampleStart: Int { instrument.sampleStart }

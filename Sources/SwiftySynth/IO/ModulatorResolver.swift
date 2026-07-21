@@ -66,8 +66,10 @@ enum ModulatorResolver {
     /// separately, then a local-preset modulator 4-field-identical to a global-preset one supersedes
     /// it, else adds (design spec §5 point 4, first half — mirrors the instrument-side global/local
     /// rule one level up). This is the list `Preset.buildRegions` stores on `PresetRegion.modulators`;
-    /// the additive combination with the instrument side happens in `addPreset` (used by Task 8's
-    /// `RegionPair`).
+    /// the additive combination with the instrument side happens as a plain concatenation in
+    /// `RegionPair.resolvedModulators` (Task 8) — NOT via `addPreset` below, which would re-dedup this
+    /// already-resolved list by the (transform-blind) 3-field identity and could drop a legitimate
+    /// entry.
     static func resolvePreset(global: [Modulator], local: [Modulator]) -> [Modulator] {
         var resolved = dedupWithinZone(global)
         supersedeOrAppend(&resolved, with: dedupWithinZone(local))
