@@ -19,10 +19,11 @@ final class RenderCore: @unchecked Sendable {
     static let transposeOffsets = [0, 7, -5, 12, -12, 4, -7, 5]
 
     init(soundFont: SoundFont, midiFile: MidiFile, layerCount: Int,
-         sampleRate: Int, maxFrames: Int) throws {
+         sampleRate: Int, maxFrames: Int, enableModulators: Bool) throws {
         var built: [Layer] = []
         for k in 0..<max(1, layerCount) {
-            let settings = try SynthesizerSettings(sampleRate: sampleRate)
+            let settings = try SynthesizerSettings(
+                sampleRate: sampleRate, enableModulators: enableModulators)
             let synth = try Synthesizer(soundFont: soundFont, settings: settings)
             let sequencer = MidiFileSequencer(synthesizer: synth)
             let offset = RenderCore.transposeOffsets[k % RenderCore.transposeOffsets.count]

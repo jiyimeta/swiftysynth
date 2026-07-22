@@ -12,6 +12,32 @@ final class SynthEngine: ObservableObject {
         didSet { if isPlaying && layerCount != oldValue { restart() } }
     }
 
+    /// SF2 note-on modulators — the piano fix. On MuseScore_General this is the
+    /// A/B switch: OFF renders Acoustic Grand Piano ~25 dB too quiet (the bug),
+    /// ON restores a natural balance. Toggling live restarts playback.
+    @Published var enableModulators: Bool = true {
+        didSet { if isPlaying && enableModulators != oldValue { restart() } }
+    }
+
+    /// Which generated test phrase drives playback.
+    @Published var testSignal: TestSignals.Kind = .pianoPhrase {
+        didSet {
+            guard testSignal != oldValue else { return }
+            loadTestSignal()
+            if isPlaying { restart() }
+        }
+    }
+
+    /// SoundFonts the picker offers (bundled `Sounds/*.sf2`, plus any opened
+    /// via the file importer).
+    @Published private(set) var availableSoundFonts: [URL]
+    @Published var selectedSoundFont: URL? {
+        didSet {
+            guard selectedSoundFont != oldValue, let url = selectedSoundFont else { return }
+            loadSoundFont(url: url)
+        }
+    }
+
     let sampleRate = 44_100
     private let maxFrames = 16_384
 
@@ -24,12 +50,20 @@ final class SynthEngine: ObservableObject {
     var stats: RenderStats? { core?.stats }
 
     init() {
-        if let url = ResourceLocator.soundFontURL() {
-            loadSoundFont(url: url)
+        availableSoundFonts = LoudnessProbe.bundledSoundFontURLs()
+        // Prefer MuseScore_General — the font whose Acoustic Grand Piano exposes
+        // the modulator bug — so the fix is audible on first launch.
+        let initial = availableSoundFonts.first { $0.lastPathComponent.hasPrefix("MuseScore") }
+            ?? ResourceLocator.soundFontURL()
+            ?? availableSoundFonts.first
+        if let initial {
+            if !availableSoundFonts.contains(initial) { availableSoundFonts.append(initial) }
+            selectedSoundFont = initial // didSet does not fire during init
+            loadSoundFont(url: initial)
         } else {
-            errorMessage = "SoundFont が見つかりません。Sounds/ に GeneralUser-GS.sf2 を置くか SWIFTYSYNTH_SF2 を設定してください。"
+            errorMessage = "SoundFont が見つかりません。Sounds/ に *.sf2 を置くか Open SoundFont… で指定してください。"
         }
-        if let url = ResourceLocator.sampleMidiURL() { loadMidi(url: url) }
+        loadTestSignal()
     }
 
     func loadSoundFont(url: URL) {
@@ -37,8 +71,26 @@ final class SynthEngine: ObservableObject {
             soundFont = try SoundFont(url: url)
             soundFontName = url.lastPathComponent
             errorMessage = nil
+            if isPlaying { restart() }
         } catch {
             errorMessage = "SoundFont 読み込み失敗: \(error)"
+        }
+    }
+
+    /// Add an externally-picked SoundFont to the list and select it.
+    func openExternalSoundFont(url: URL) {
+        if !availableSoundFonts.contains(url) { availableSoundFonts.append(url) }
+        selectedSoundFont = url
+    }
+
+    /// Regenerate the in-memory MIDI for the selected test signal.
+    private func loadTestSignal() {
+        do {
+            midiFile = try TestSignals.midi(for: testSignal)
+            midiName = testSignal.rawValue
+            errorMessage = nil
+        } catch {
+            errorMessage = "テスト信号生成失敗: \(error)"
         }
     }
 
@@ -75,7 +127,8 @@ final class SynthEngine: ObservableObject {
             #endif
             let core = try RenderCore(
                 soundFont: soundFont, midiFile: midiFile,
-                layerCount: layerCount, sampleRate: sampleRate, maxFrames: maxFrames)
+                layerCount: layerCount, sampleRate: sampleRate, maxFrames: maxFrames,
+                enableModulators: enableModulators)
             let node = SynthEngine.makeSourceNode(core: core, sampleRate: Double(sampleRate))
             let engine = AVAudioEngine()
             engine.attach(node)
