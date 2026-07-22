@@ -83,6 +83,45 @@ struct ModulatorBehavioralTests {
         }
     }
 
+    /// **Destination-11 regression guard (design spec §6, full note-on destination set).** Pins the
+    /// `velocity -> modulationEnvelopeToFilterCutoffFrequency` path — the exact mechanism the design
+    /// spec's Problem section identifies for the real MuseScore_General piano collapse (a font-declared
+    /// `modEnvToFilterFc` modulator opening a deliberately-dark base filter as velocity increases).
+    /// `SyntheticFont.crossfadeFont`'s "DarkFilter" program (patch 2) sets a floor-value base filter
+    /// (`initialFilterCutoffFrequency` = 1500, ~19 Hz, far below the shared sample's ~344.5 Hz
+    /// fundamental at key 60) plus one instrument-local modulator: velocity(minToMax, linear) ->
+    /// destination 11, amount 5000. `Voice.process` already renders `modEnvToCutoff` -> filter cutoff
+    /// via its existing `dynamicCutoff` path; this test only exercises whether `Voice.start` actually
+    /// feeds the resolved modulator sum into that depth generator. Without that (the prior scope-cut
+    /// state), the base filter stays fixed at ~19 Hz regardless of velocity, so peak stays flat
+    /// (non-monotonic) rather than rising with velocity — this test is RED on that prior state and only
+    /// goes GREEN once destination 11 is wired.
+    @Test
+    func darkBaseFilterOpensWithVelocityViaModEnvToFilterFc() throws {
+        let font = try SyntheticFont.crossfadeFont()
+
+        let p49 = try SyntheticFont.presetPeak(font, program: 2, key: 60, velocity: 49, enableModulators: true)
+        let p80 = try SyntheticFont.presetPeak(font, program: 2, key: 60, velocity: 80, enableModulators: true)
+        let p100 = try SyntheticFont.presetPeak(font, program: 2, key: 60, velocity: 100, enableModulators: true)
+
+        #expect(
+            p80 > p49,
+            """
+            a velocity->modEnvToFilterFc modulator opening a dark base filter must render LOUDER at \
+            higher velocity (49: \(p49) dB vs 80: \(p80) dB) — this is the destination-11 path the \
+            real-font piano collapse depends on
+            """
+        )
+        #expect(
+            p100 > p80,
+            "monotonic: louder still at velocity 100 than 80 (80: \(p80) dB vs 100: \(p100) dB)"
+        )
+
+        // Sanity: velocity 100 must actually clear the render noise floor, or the comparisons above
+        // could pass trivially near silence without the filter ever actually opening.
+        #expect(p100 > -60, "expected velocity 100 to render clearly audible output, got \(p100) dB")
+    }
+
     /// **REQUIRED (Task-9 review carry-forward) — pins the ON path's FULL-WEIGHT attenuation
     /// coefficient.** `Voice.start`'s ON branch must compute `-(0.1 * attenuationCentibels)` at FULL
     /// (1.0×) weight, never the OFF branch's `0.4 × region.initialAttenuation` reduction (a

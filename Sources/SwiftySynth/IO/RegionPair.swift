@@ -82,6 +82,20 @@ internal struct RegionPair {
         return sum
     }
 
+    /// Convenience for `Voice.start`'s ON path (design spec §6): adds `type`'s resolved note-on
+    /// modulator sum to its raw generator value and clamps the result to `range` (the destination's
+    /// SF2 §8.1.3 range) in one call. Every modulated destination in `Voice.start` follows this same
+    /// raw-then-clamp shape; centralizing it here keeps each call site to one line and keeps the
+    /// arithmetic allocation-free — `modulatorSum`'s two `for` loops over the already-stored
+    /// `instrument.modulators`/`preset.modulators` arrays are the only iteration, and `ClosedRange<Float>`
+    /// is a value type (no heap allocation).
+    internal func modulatedGenerator(
+        _ type: GeneratorType, velocity: Int, key: Int, clampedTo range: ClosedRange<Float>
+    ) -> Float {
+        let raw = Float(rawGenerator(type)) + modulatorSum(destination: type, velocity: velocity, key: key)
+        return min(max(raw, range.lowerBound), range.upperBound)
+    }
+
     // MARK: - Instrument-only (sample-scope) members
 
     internal var sampleStart: Int { instrument.sampleStart }

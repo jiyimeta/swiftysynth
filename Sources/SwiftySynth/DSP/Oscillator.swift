@@ -58,9 +58,9 @@ final class Oscillator {
         startLoop: Int,
         endLoop: Int,
         rootKey: Int,
-        coarseTune: Int,
-        fineTune: Int,
-        scaleTuning: Int
+        coarseTune: Float,
+        fineTune: Float,
+        scaleTuning: Float
     ) {
         self.data = data
         self.loopMode = loopMode
@@ -71,8 +71,8 @@ final class Oscillator {
         self.endLoop = endLoop
         self.rootKey = rootKey
 
-        tune = Float(coarseTune) + 0.01 * Float(fineTune)
-        pitchChangeScale = 0.01 * Float(scaleTuning)
+        tune = coarseTune + 0.01 * fineTune
+        pitchChangeScale = 0.01 * scaleTuning
         sampleRateRatio = Float(sampleRate) / Float(synthesizerSampleRate)
 
         if loopMode == .noLoop {

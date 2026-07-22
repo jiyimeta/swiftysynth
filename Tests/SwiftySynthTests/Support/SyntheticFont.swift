@@ -43,6 +43,28 @@ enum SyntheticFont {
     ///   per-zone dynamics. That loss (mechanism, not exact numbers) is the collapse this feature
     ///   fixes; `ModulatorBehavioralTests` exercises the ON path only, proving parity + monotonicity
     ///   there.
+    ///
+    /// - **program 2 ("DarkFilter"), bank 0** — the destination-11 regression guard (design spec §6's
+    ///   full note-on destination set): one full-range preset zone with no preset-level generators or
+    ///   modulators of its own, pointing at a THIRD instrument whose single local zone carries a
+    ///   deliberately dark base filter (`initialFilterCutoffFrequency` generator = 1500, the SF2 §8.1.3
+    ///   floor, ~19 Hz — far below the shared sample's ~344.5 Hz played-back fundamental at key 60) PLUS
+    ///   TWO note-on modulators: (1) velocity -> initialAttenuation, amount 0 — the SAME canceling
+    ///   shape Piano's global zone uses, REQUIRED here so SF2 default #1 (already in scope even before
+    ///   this feature's full destination set) cannot make the note louder at higher velocity on its
+    ///   own — without it this test would pass whether or not destination 11 is wired at all, pinning
+    ///   nothing; (2) velocity(minToMax, linear) -> `modulationEnvelopeToFilterCutoffFrequency`
+    ///   (destination 11), amount 5000, the exact real-font mechanism the design spec's Problem section
+    ///   describes: a font-declared `modEnvToFilterFc` modulator that OPENS a dark base filter as
+    ///   velocity increases, riding on `Voice.process`'s existing `dynamicCutoff` rendering (which reads
+    ///   the modulated `modEnvToCutoff` generator this feature now feeds — no DSP change needed, only
+    ///   `Voice.start` feeding the modulator sum into that depth generator). With modulators ON, higher
+    ///   velocity -> a larger modulation-envelope-driven cutoff excursion -> a brighter/louder note; with
+    ///   modulators OFF (or before this feature's dest-11 wiring), the base filter stays fixed at ~19 Hz
+    ///   regardless of velocity AND attenuation is velocity-invariant (modulator 1), so the note stays
+    ///   uniformly near-silent — flat, not monotonic. Q is left at its default (raw 0 -> 0 dB, unity
+    ///   resonance) so the filter's magnitude response at the fixed test frequency is monotonic in
+    ///   cutoff with no resonance-peak crossover to complicate the assertion.
     static func crossfadeFont() throws -> SoundFont {
         try SoundFont(data: crossfadeFontData())
     }
@@ -96,6 +118,21 @@ enum SyntheticFont {
         return [UInt8](w.data)
     }
 
+    /// A `pmod`/`imod` velocity -> `modulationEnvelopeToFilterCutoffFrequency` (destination 11) record
+    /// (linear, minToMax, unipolar; amount-source none; transform linear) — the "DarkFilter" program's
+    /// dest-11 regression fixture (see `crossfadeFont`'s doc comment): higher velocity produces a larger
+    /// positive contribution to the modulation-envelope-to-cutoff DEPTH generator, opening the
+    /// instrument's dark base filter wider as velocity increases.
+    private static func velocityToModEnvFilterCutoffModulatorBytes(amount: Int16) -> [UInt8] {
+        var w = ByteWriter()
+        w.u16(0x0002) // srcOper: index 2 (velocity), CC clear, direction minToMax, curve linear
+        w.u16(11) // destOper: modulationEnvelopeToFilterCutoffFrequency
+        w.i16(amount)
+        w.u16(0) // amtSrcOper: none
+        w.u16(0) // transformOper: linear
+        return [UInt8](w.data)
+    }
+
     /// Packs a `keyRange`/`velocityRange`-style generator value: low byte = range start, high byte =
     /// range end (mirrors `PresetRegion.velocityRangeStart`/`velocityRangeEnd`'s decode).
     private static func range(_ start: UInt8, _ end: UInt8) -> UInt16 {
@@ -141,10 +178,11 @@ enum SyntheticFont {
         }
         presetRecord("Bass", patch: 0, bank: 0, zoneStart: 0)
         presetRecord("Piano", patch: 1, bank: 0, zoneStart: 1)
-        presetRecord("EOP", patch: 0, bank: 0, zoneStart: 3) // terminator: total preset-zone count
+        presetRecord("DarkFilter", patch: 2, bank: 0, zoneStart: 3)
+        presetRecord("EOP", patch: 0, bank: 0, zoneStart: 4) // terminator: total preset-zone count
 
         // pdta: pbag/pmod/pgen — preset zones: zone0 (Bass), zone1 (Piano vel 0-79),
-        // zone2 (Piano vel 80-127) ---------------------------------------------------------------
+        // zone2 (Piano vel 80-127), zone3 (DarkFilter) -------------------------------------------
         var pgen = ByteWriter()
         func gen(_ writer: inout ByteWriter, _ type: UInt16, _ value: UInt16) {
             writer.u16(type)
@@ -157,6 +195,7 @@ enum SyntheticFont {
         gen(&pgen, 41, 1) // zone1 (Piano A): instrument = 1                        [index 4]
         gen(&pgen, 44, range(80, 127)) // zone2 (Piano B): velocityRange 80-127     [index 5]
         gen(&pgen, 41, 1) // zone2 (Piano B): instrument = 1                        [index 6]
+        gen(&pgen, 41, 2) // zone3 (DarkFilter): instrument = 2                     [index 7]
         gen(&pgen, 0, 0) // terminal generator record (dropped by Generator.readFromChunk)
 
         var pmod = ByteWriter()
@@ -175,10 +214,12 @@ enum SyntheticFont {
         bag(&pbag, 0, 0) // zone0 (Bass): generators [0,2), modulators [0,0)
         bag(&pbag, 2, 0) // zone1 (Piano A): generators [2,5), modulators [0,1)
         bag(&pbag, 5, 1) // zone2 (Piano B): generators [5,7), modulators [1,2)
-        bag(&pbag, 7, 2) // terminator: total generator/modulator counts
+        bag(&pbag, 7, 2) // zone3 (DarkFilter): generators [7,8), modulators [2,2)
+        bag(&pbag, 8, 2) // terminator: total generator/modulator counts
 
         // pdta: inst/ibag/imod/igen — instruments: Bass (one local zone), Piano (one GLOBAL zone
-        // carrying the canceling modulator + one local zone with the sample) ---------------------
+        // carrying the canceling modulator + one local zone with the sample), DarkFilter (one local
+        // zone with the dark base filter + its dest-11 modulator) ---------------------------------
         var inst = ByteWriter()
         func instRecord(_ name: String, zoneStart: UInt16) {
             inst.fixedString(name, length: 20)
@@ -186,7 +227,8 @@ enum SyntheticFont {
         }
         instRecord("Bass", zoneStart: 0)
         instRecord("Piano", zoneStart: 1)
-        instRecord("EOI", zoneStart: 3) // terminator: total instrument-zone count
+        instRecord("DarkFilter", zoneStart: 3)
+        instRecord("EOI", zoneStart: 4) // terminator: total instrument-zone count
 
         // Each instrument zone's generators end with sampleID (53) LAST — required for zoneB0 (it
         // is zones[0] of Bass's own slice, so `Instrument.buildRegions`'s global-zone detection
@@ -199,6 +241,10 @@ enum SyntheticFont {
         gen(&igen, 53, 0) // zoneB0 (Bass local zone): sampleID = 0                 [index 1]
         gen(&igen, 54, 1) // zoneP-local (Piano local zone): sampleModes = continuous [index 2]
         gen(&igen, 53, 0) // zoneP-local (Piano local zone): sampleID = 0           [index 3]
+        gen(&igen, 8, 1500) // zoneD0 (DarkFilter local zone): initialFilterCutoffFrequency = 1500
+        //                     (SF2 §8.1.3 floor, ~19 Hz — the deliberately dark base filter) [index 4]
+        gen(&igen, 54, 1) // zoneD0 (DarkFilter local zone): sampleModes = continuous [index 5]
+        gen(&igen, 53, 0) // zoneD0 (DarkFilter local zone): sampleID = 0           [index 6]
         gen(&igen, 0, 0) // terminal generator record
 
         var imod = ByteWriter()
@@ -207,12 +253,24 @@ enum SyntheticFont {
         // default with this (canceling the instrument's own velocity-driven attenuation entirely —
         // the real MuseScore_General piano's technique, design spec's Problem section).
         imod.bytes(velocityToAttenuationModulatorBytes(amount: 0)) // [index 0]
+        // zoneD0's (DarkFilter) two modulators. The canceling velocity->initialAttenuation (amount 0,
+        // same shape as above) is REQUIRED, not incidental: without it, SF2 default #1 is still in
+        // scope (it was applied even before this feature's full destination set) and its own
+        // velocity-driven attenuation would make the note louder at higher velocity regardless of
+        // whether destination 11 is wired at all — a false-positive pass that pins nothing. Canceling
+        // it isolates the ONLY velocity-dependent effect left to the dest-11 modEnvToFilterFc path
+        // this test exists to guard.
+        imod.bytes(velocityToAttenuationModulatorBytes(amount: 0)) // [index 1]
+        // velocity -> modEnvToFilterFc, amount 5000 — see `crossfadeFont`'s doc comment
+        // (destination-11 regression guard).
+        imod.bytes(velocityToModEnvFilterCutoffModulatorBytes(amount: 5000)) // [index 2]
 
         var ibag = ByteWriter()
         bag(&ibag, 0, 0) // zoneB0 (Bass): generators [0,2), modulators [0,0)
         bag(&ibag, 2, 0) // zoneP-global (Piano): generators [2,2), modulators [0,1)
         bag(&ibag, 2, 1) // zoneP-local (Piano): generators [2,4), modulators [1,1)
-        bag(&ibag, 4, 1) // terminator: total generator/modulator counts
+        bag(&ibag, 4, 1) // zoneD0 (DarkFilter local): generators [4,7), modulators [1,3)
+        bag(&ibag, 7, 3) // terminator: total generator/modulator counts
 
         // shdr — one shared PCM sample, continuously looped over its whole 128-sample body --------
         var shdr = ByteWriter()

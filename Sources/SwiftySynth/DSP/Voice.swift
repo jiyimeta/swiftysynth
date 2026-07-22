@@ -128,24 +128,29 @@ final class Voice {
     /// equivalence-critical entry point for a voice's entire parameter set.
     ///
     /// `enableModulators` (design spec §6, optional SF2 note-on modulator support) gates a second,
-    /// independent computation of `noteGain`/`cutoff`: ON folds `RegionPair.modulatorSum`'s resolved
-    /// note-on modulator contributions into the raw `initialAttenuation`/`initialFilterCutoffFrequency`
-    /// generators (each clamped to its SF2 §8.1.3 range) before unit conversion, and — since SF2
-    /// default #1 (velocity -> initialAttenuation) is always inside that modulator sum unless a font
-    /// supersedes it — REPLACES the hardcoded `2 * linearToDecibels(velocity/127)` velocity term rather
-    /// than adding to it (adding both would double-count velocity attenuation). Defaults to `false` so
-    /// every existing call site (`VoiceTests`, `VoiceCollectionTests`) is unaffected. The OFF branch
-    /// below is the EXACT pre-existing body, untouched, preserving every MeltySynth-equivalence oracle
-    /// vector (design spec's OFF-path guarantee).
+    /// independent computation of every modulator-eligible parameter this method reads: ON folds
+    /// `RegionPair.modulatorSum`'s resolved note-on modulator contributions into each destination's raw
+    /// generator value (clamped to its SF2 §8.1.3 range, via `RegionPair.modulatedGenerator`) before
+    /// unit conversion, and — since SF2 default #1 (velocity -> initialAttenuation) is always inside
+    /// the attenuation modulator sum unless a font supersedes it — REPLACES the hardcoded
+    /// `2 * linearToDecibels(velocity/127)` velocity term rather than adding to it (adding both would
+    /// double-count velocity attenuation). Defaults to `false` so every existing call site (`VoiceTests`,
+    /// `VoiceCollectionTests`) is unaffected. The OFF branch below is the EXACT pre-existing body,
+    /// untouched, preserving every MeltySynth-equivalence oracle vector (design spec's OFF-path
+    /// guarantee).
     ///
-    /// Scope note (documented partial, per design spec's "Partial fidelity" risk): this task folds
-    /// `modulatorSum` into `initialAttenuation` and `initialFilterCutoffFrequency` only — the two
-    /// destinations that fix the reported loudness/brightness bug. Other modulator-eligible generators
-    /// this method reads raw (`coarseTune`/`fineTune`, `modulationEnvelopeToPitch`/
-    /// `modulationEnvelopeToFilterCutoffFrequency`, the `modulationLfoTo*` depths) are left unmodulated
-    /// this release; applying them correctly needs each destination's own SF2 §8.1.3 clamp range
-    /// (and, for `fineTune`, care not to fold the modulator sum into `sample.pitchCorrection`, which
-    /// `RegionPair.fineTune` already bakes in) — deferred rather than guessed at.
+    /// Full destination coverage (design spec §6, completed): `initialFilterQ` (9, both `resonance` and
+    /// the `filterAttenuation` carry-over now read the MODULATED Q consistently — the real-font bug this
+    /// task fixes needs a font's `modEnvToFilterFc` modulator to open a deliberately-dark base filter,
+    /// and that filter's own declared Q must track it); `modulationLfoToFilterCutoffFrequency` (10) /
+    /// `modulationEnvelopeToFilterCutoffFrequency` (11) — feeding these two DEPTH generators is enough
+    /// to flow a modulator's contribution through `Voice.process`'s existing `dynamicCutoff` rendering,
+    /// no DSP change needed; the pitch depths (5/6/7); `coarseTune` (51) / `fineTune` (52, modulator sum
+    /// applies to the GENERATOR only — `sample.pitchCorrection` is folded in separately, unclamped,
+    /// exactly as `RegionPair.fineTune` already does on the OFF path) / `scaleTuning` (56);
+    /// `modulationLfoToVolume` (13) / `pan` (17) / `reverbEffectsSend` (16) / `chorusEffectsSend` (15);
+    /// and the volume/modulation envelope timecent generators (`startVolumeEnvelope`/
+    /// `startModulationEnvelope`, below).
     func start(
         region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int,
         enableModulators: Bool = false
@@ -157,36 +162,54 @@ final class Voice {
         self.velocity = velocity
 
         if enableModulators {
-            // ON path (design spec §6). `filterAttenuation` is a MeltySynth-ism (compensates this
-            // filter realization's resonance peak), not an SF2 quantity — kept as-is on purpose
-            // (design spec's "Deliberate carry-overs"), so it reads `region.initialFilterQ` directly,
-            // with no modulator sum folded in.
-            let filterAttenuation = 0.5 * region.initialFilterQ
+            // ON path (design spec §6, full note-on destination set).
+            let filterQCentibels = region.modulatedGenerator(.initialFilterQ, velocity: velocity, key: key, clampedTo: 0...960)
+            let filterQDecibels = 0.1 * filterQCentibels
+            // `filterAttenuation` is a MeltySynth-ism (compensates this filter realization's resonance
+            // peak), not an SF2 quantity — kept as-is on purpose (design spec's "Deliberate
+            // carry-overs"), but now reads the MODULATED Q consistently with `resonance` below.
+            let filterAttenuation = 0.5 * filterQDecibels
 
             if velocity > 0 {
-                let attenuationCentibels = min(
-                    max(
-                        Float(region.rawGenerator(.initialAttenuation))
-                            + region.modulatorSum(destination: .initialAttenuation, velocity: velocity, key: key),
-                        0
-                    ),
-                    1440
-                )
+                let attenuationCentibels = region.modulatedGenerator(
+                    .initialAttenuation, velocity: velocity, key: key, clampedTo: 0...1440)
                 noteGain = SoundFontMath.decibelsToLinear(-(0.1 * attenuationCentibels) - filterAttenuation)
             } else {
                 noteGain = 0
             }
 
-            let cutoffCents = min(
-                max(
-                    Float(region.rawGenerator(.initialFilterCutoffFrequency))
-                        + region.modulatorSum(destination: .initialFilterCutoffFrequency, velocity: velocity, key: key),
-                    1500
-                ),
-                13500
-            )
+            let cutoffCents = region.modulatedGenerator(
+                .initialFilterCutoffFrequency, velocity: velocity, key: key, clampedTo: 1500...13500)
             cutoff = SoundFontMath.centsToHertz(cutoffCents)
-            resonance = SoundFontMath.decibelsToLinear(region.initialFilterQ)
+            resonance = SoundFontMath.decibelsToLinear(filterQDecibels)
+
+            vibLfoToPitch = 0.01 * region.modulatedGenerator(
+                .vibratoLfoToPitch, velocity: velocity, key: key, clampedTo: -12000...12000)
+            modLfoToPitch = 0.01 * region.modulatedGenerator(
+                .modulationLfoToPitch, velocity: velocity, key: key, clampedTo: -12000...12000)
+            modEnvToPitch = 0.01 * region.modulatedGenerator(
+                .modulationEnvelopeToPitch, velocity: velocity, key: key, clampedTo: -12000...12000)
+
+            // Feeding the modulator sum into these two DEPTH generators is enough: `Voice.process`
+            // already renders `modEnvToCutoff`/`modLfoToCutoff` -> filter cutoff via `dynamicCutoff`,
+            // so a font's `velocity -> modEnvToFilterFc` modulator (the real-font bug's mechanism —
+            // opening a deliberately-dark base filter with velocity) flows through unchanged.
+            modLfoToCutoff = Int(region.modulatedGenerator(
+                .modulationLfoToFilterCutoffFrequency, velocity: velocity, key: key, clampedTo: -12000...12000))
+            modEnvToCutoff = Int(region.modulatedGenerator(
+                .modulationEnvelopeToFilterCutoffFrequency, velocity: velocity, key: key, clampedTo: -12000...12000))
+            dynamicCutoff = modLfoToCutoff != 0 || modEnvToCutoff != 0
+
+            modLfoToVolume = 0.1 * region.modulatedGenerator(
+                .modulationLfoToVolume, velocity: velocity, key: key, clampedTo: -960...960)
+            dynamicVolume = modLfoToVolume > 0.05
+
+            let panRaw = region.modulatedGenerator(.pan, velocity: velocity, key: key, clampedTo: -500...500)
+            instrumentPan = min(max(0.1 * panRaw, -50), 50)
+            instrumentReverb = 0.01 * region.modulatedGenerator(
+                .reverbEffectsSend, velocity: velocity, key: key, clampedTo: 0...1000)
+            instrumentChorus = 0.01 * region.modulatedGenerator(
+                .chorusEffectsSend, velocity: velocity, key: key, clampedTo: 0...1000)
         } else {
             // OFF path — UNCHANGED from the pre-modulator body (byte-identical).
             if velocity > 0 {
@@ -202,28 +225,28 @@ final class Voice {
 
             cutoff = region.initialFilterCutoffFrequency
             resonance = SoundFontMath.decibelsToLinear(region.initialFilterQ)
+
+            vibLfoToPitch = 0.01 * Float(region.vibratoLfoToPitch)
+            modLfoToPitch = 0.01 * Float(region.modulationLfoToPitch)
+            modEnvToPitch = 0.01 * Float(region.modulationEnvelopeToPitch)
+
+            modLfoToCutoff = region.modulationLfoToFilterCutoffFrequency
+            modEnvToCutoff = region.modulationEnvelopeToFilterCutoffFrequency
+            dynamicCutoff = modLfoToCutoff != 0 || modEnvToCutoff != 0
+
+            modLfoToVolume = region.modulationLfoToVolume
+            dynamicVolume = modLfoToVolume > 0.05
+
+            instrumentPan = min(max(region.pan, -50), 50)
+            instrumentReverb = 0.01 * region.reverbEffectsSend
+            instrumentChorus = 0.01 * region.chorusEffectsSend
         }
 
-        vibLfoToPitch = 0.01 * Float(region.vibratoLfoToPitch)
-        modLfoToPitch = 0.01 * Float(region.modulationLfoToPitch)
-        modEnvToPitch = 0.01 * Float(region.modulationEnvelopeToPitch)
-
-        modLfoToCutoff = region.modulationLfoToFilterCutoffFrequency
-        modEnvToCutoff = region.modulationEnvelopeToFilterCutoffFrequency
-        dynamicCutoff = modLfoToCutoff != 0 || modEnvToCutoff != 0
-
-        modLfoToVolume = region.modulationLfoToVolume
-        dynamicVolume = modLfoToVolume > 0.05
-
-        instrumentPan = min(max(region.pan, -50), 50)
-        instrumentReverb = 0.01 * region.reverbEffectsSend
-        instrumentChorus = 0.01 * region.chorusEffectsSend
-
-        startVolumeEnvelope(region: region, key: key, velocity: velocity)
-        startModulationEnvelope(region: region, key: key, velocity: velocity)
+        startVolumeEnvelope(region: region, key: key, velocity: velocity, enableModulators: enableModulators)
+        startModulationEnvelope(region: region, key: key, velocity: velocity, enableModulators: enableModulators)
         startVibratoLfo(region: region)
         startModulationLfo(region: region)
-        startOscillator(region: region, data: data)
+        startOscillator(region: region, data: data, key: key, velocity: velocity, enableModulators: enableModulators)
         filter.clearBuffer()
         filter.setLowPassFilter(cutoffFrequency: cutoff, resonance: resonance)
 
@@ -233,28 +256,81 @@ final class Voice {
         voiceLength = 0
     }
 
-    /// Mirrors `RegionEx.Start(this VolumeEnvelope, RegionPair, int, int)`.
-    private func startVolumeEnvelope(region: RegionPair, key: Int, velocity: Int) {
+    /// Mirrors `RegionEx.Start(this VolumeEnvelope, RegionPair, int, int)`. `enableModulators` (design
+    /// spec §6) feeds each timecent generator's modulator sum in before the timecents-to-seconds
+    /// conversion, clamped to its SF2 §8.1.3 range (`delay`/`hold` -12000...5000, `attack`/`decay`/
+    /// `release` -12000...8000) — the font's own note-on modulators (e.g. a velocity-shortened attack)
+    /// are lower-priority than the filter/attenuation set for the reported bug, but still apply. The
+    /// OFF branch is the EXACT pre-existing body, byte-identical.
+    private func startVolumeEnvelope(region: RegionPair, key: Int, velocity: Int, enableModulators: Bool) {
         // If the release time is shorter than 10 ms, it will be clamped to 10 ms to avoid pop noise.
-        let delay = region.delayVolumeEnvelope
-        let attack = region.attackVolumeEnvelope
-        let hold = region.holdVolumeEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeHold, key)
-        let decay = region.decayVolumeEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeDecay, key)
+        let delay: Float
+        let attack: Float
+        let hold: Float
+        let decay: Float
+        let release: Float
+        if enableModulators {
+            delay = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.delayVolumeEnvelope, velocity: velocity, key: key, clampedTo: -12000...5000))
+            attack = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.attackVolumeEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000))
+            hold = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.holdVolumeEnvelope, velocity: velocity, key: key, clampedTo: -12000...5000))
+                * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeHold, key)
+            decay = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.decayVolumeEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000))
+                * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeDecay, key)
+            release = max(
+                SoundFontMath.timecentsToSeconds(
+                    region.modulatedGenerator(.releaseVolumeEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000)),
+                0.01
+            )
+        } else {
+            delay = region.delayVolumeEnvelope
+            attack = region.attackVolumeEnvelope
+            hold = region.holdVolumeEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeHold, key)
+            decay = region.decayVolumeEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToVolumeEnvelopeDecay, key)
+            release = max(region.releaseVolumeEnvelope, 0.01)
+        }
         let sustain = SoundFontMath.decibelsToLinear(-region.sustainVolumeEnvelope)
-        let release = max(region.releaseVolumeEnvelope, 0.01)
 
         volEnv.start(delay: delay, attack: attack, hold: hold, decay: decay, sustain: sustain, release: release)
     }
 
-    /// Mirrors `RegionEx.Start(this ModulationEnvelope, RegionPair, int, int)`.
-    private func startModulationEnvelope(region: RegionPair, key: Int, velocity: Int) {
+    /// Mirrors `RegionEx.Start(this ModulationEnvelope, RegionPair, int, int)`. `enableModulators`
+    /// (design spec §6) feeds each timecent generator's modulator sum in before the timecents-to-seconds
+    /// conversion (same shape/ranges as `startVolumeEnvelope`), ahead of the existing TinySoundFont
+    /// velocity-attack adjustment (kept unchanged, applied to the already-modulated `attack`). The OFF
+    /// branch is the EXACT pre-existing body, byte-identical.
+    private func startModulationEnvelope(region: RegionPair, key: Int, velocity: Int, enableModulators: Bool) {
+        let delay: Float
+        let attackBase: Float
+        let hold: Float
+        let decay: Float
+        let release: Float
+        if enableModulators {
+            delay = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.delayModulationEnvelope, velocity: velocity, key: key, clampedTo: -12000...5000))
+            attackBase = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.attackModulationEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000))
+            hold = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.holdModulationEnvelope, velocity: velocity, key: key, clampedTo: -12000...5000))
+                * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeHold, key)
+            decay = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.decayModulationEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000))
+                * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeDecay, key)
+            release = SoundFontMath.timecentsToSeconds(
+                region.modulatedGenerator(.releaseModulationEnvelope, velocity: velocity, key: key, clampedTo: -12000...8000))
+        } else {
+            delay = region.delayModulationEnvelope
+            attackBase = region.attackModulationEnvelope
+            hold = region.holdModulationEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeHold, key)
+            decay = region.decayModulationEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeDecay, key)
+            release = region.releaseModulationEnvelope
+        }
         // According to the implementation of TinySoundFont, the attack time should be adjusted by the velocity.
-        let delay = region.delayModulationEnvelope
-        let attack = region.attackModulationEnvelope * (Float(145 - velocity) / 144)
-        let hold = region.holdModulationEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeHold, key)
-        let decay = region.decayModulationEnvelope * SoundFontMath.keyNumberToMultiplyingFactor(region.keyNumberToModulationEnvelopeDecay, key)
+        let attack = attackBase * (Float(145 - velocity) / 144)
         let sustain = 1 - region.sustainModulationEnvelope / 100
-        let release = region.releaseModulationEnvelope
 
         modEnv.start(delay: delay, attack: attack, hold: hold, decay: decay, sustain: sustain, release: release)
     }
@@ -269,8 +345,30 @@ final class Voice {
         modLfo.start(delay: region.delayModulationLfo, frequency: region.frequencyModulationLfo)
     }
 
-    /// Mirrors `RegionEx.Start(this Oscillator, short[], RegionPair)`.
-    private func startOscillator(region: RegionPair, data: [Int16]) {
+    /// Mirrors `RegionEx.Start(this Oscillator, short[], RegionPair)`. `enableModulators` (design spec
+    /// §6) feeds `coarseTune` (51, clamped -120...120 semitones) / `scaleTuning` (56, clamped
+    /// 0...1200) modulator sums into their raw generators directly; `fineTune` (52, clamped -99...99
+    /// cents) applies its modulator sum to the GENERATOR ONLY, then adds `sample.pitchCorrection`
+    /// separately and unclamped — mirrors `RegionPair.fineTune`, which bakes in `pitchCorrection` the
+    /// same way on the OFF path, so the correction is never double-clamped or lost. `Oscillator.start`
+    /// takes these three as `Float` (not `Int`) specifically so a fractional modulator contribution
+    /// isn't rounded away before reaching the pitch computation. The OFF branch is the EXACT
+    /// pre-existing body (`Float(...)`-widened for the shared parameter type), byte-identical.
+    private func startOscillator(region: RegionPair, data: [Int16], key: Int, velocity: Int, enableModulators: Bool) {
+        let coarseTune: Float
+        let fineTune: Float
+        let scaleTuning: Float
+        if enableModulators {
+            coarseTune = region.modulatedGenerator(.coarseTune, velocity: velocity, key: key, clampedTo: -120...120)
+            let fineTuneGenerator = region.modulatedGenerator(.fineTune, velocity: velocity, key: key, clampedTo: -99...99)
+            fineTune = fineTuneGenerator + Float(region.instrument.sample.pitchCorrection)
+            scaleTuning = region.modulatedGenerator(.scaleTuning, velocity: velocity, key: key, clampedTo: 0...1200)
+        } else {
+            coarseTune = Float(region.coarseTune)
+            fineTune = Float(region.fineTune)
+            scaleTuning = Float(region.scaleTuning)
+        }
+
         oscillator.start(
             data: data,
             loopMode: region.sampleModes,
@@ -280,9 +378,9 @@ final class Voice {
             startLoop: region.sampleStartLoop,
             endLoop: region.sampleEndLoop,
             rootKey: region.rootKey,
-            coarseTune: region.coarseTune,
-            fineTune: region.fineTune,
-            scaleTuning: region.scaleTuning
+            coarseTune: coarseTune,
+            fineTune: fineTune,
+            scaleTuning: scaleTuning
         )
     }
 
