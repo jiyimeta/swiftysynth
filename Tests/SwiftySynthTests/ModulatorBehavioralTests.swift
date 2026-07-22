@@ -11,10 +11,20 @@ import Testing
 /// response — the two properties the real font's collapse violated (piano quieter at mf(80) than at
 /// pp(49), an inverted response — design spec's measured table).
 ///
-/// Also carries the REQUIRED coordinator carry-forward from the Task-9 review: a test that pins the
-/// ON path's FULL-WEIGHT attenuation coefficient, discriminating it from the OFF path's `0.4×`
-/// reduction — a regression none of Task 9's own tests (attenuation 0, monotonic-only, amount-0
-/// modulators) would have caught.
+/// Also carries the REQUIRED coordinator carry-forward from the Task-9 review, UPDATED by Task 14's
+/// FluidSynth attenuation reconciliation: `onPathAppliesFullWeightAttenuationNotOffPathsPointFourWeight`
+/// originally pinned the ON path's FULL-WEIGHT coefficient on the STATIC `initialAttenuation` generator,
+/// discriminating it from the OFF path's `0.4×` reduction. Task 14 found that full-weight choice was
+/// itself the bug: measured against FluidSynth 3.5.5, applying the static generator at 1.0× on the ON
+/// path made MuseScore_General's piano ~13 dB too quiet vs. the bass reference (an ~18 dB gap where
+/// FluidSynth measures ~5 dB). The fix gives the STATIC generator the SAME `0.4×` weight on both paths
+/// — only the MODULATOR SUM (velocity -> attenuation, including SF2 default #1) stays at full weight on
+/// the ON path. That makes the two paths' rendered levels coincide even at a NONZERO static attenuation
+/// (previously they were 6.0 dB apart by design) — the test below is UPDATED to pin exactly that: a ~0
+/// dB delta, generalizing the zero-attenuation identity above (`VoiceModulatorApplyTests`) to a
+/// nonzero-generator region. A regression back to full weight on the static generator (the pre-Task-14
+/// bug) would reopen a ~6 dB gap here; a regression that ALSO weights the modulator sum by 0.4× would
+/// open a gap in the other direction — both are caught by the same ~0 dB assertion.
 struct ModulatorBehavioralTests {
     /// **The behavioral guard.** Design spec's empirical gate on the collapse, in miniature: with
     /// modulators ON, does restoring correct per-layer levels actually produce a piano that sounds
@@ -122,34 +132,37 @@ struct ModulatorBehavioralTests {
         #expect(p100 > -60, "expected velocity 100 to render clearly audible output, got \(p100) dB")
     }
 
-    /// **REQUIRED (Task-9 review carry-forward) — pins the ON path's FULL-WEIGHT attenuation
-    /// coefficient.** `Voice.start`'s ON branch must compute `-(0.1 * attenuationCentibels)` at FULL
-    /// (1.0×) weight, never the OFF branch's `0.4 × region.initialAttenuation` reduction (a
-    /// Polyphone-derived fudge factor that the design spec's "Deliberate carry-overs" note calls an
-    /// OFF-path-only artifact — the ON path is supposed to use full-weight spec attenuation). Every
-    /// one of Task 9's own tests uses attenuation 0, a monotonic-only comparison, or an amount-0
-    /// modulator, so a regression that kept the `0.4×` weight on the ON path would pass ALL of them
-    /// silently — this is the test that would catch it.
+    /// **REQUIRED (Task-9 review carry-forward, UPDATED by Task 14's FluidSynth reconciliation) — pins
+    /// the ON path's attenuation weighting for a NONZERO static generator.** Originally this test pinned
+    /// the ON branch computing `-(0.1 * attenuationCentibels)` at FULL (1.0×) weight on the STATIC
+    /// `initialAttenuation` generator, discriminating it from the OFF branch's `0.4 × region.
+    /// initialAttenuation` reduction. Task 14 found that full-weight choice was the root cause of the ON
+    /// path rendering MuseScore_General's piano ~13 dB too quiet relative to FluidSynth 3.5.5 (measured
+    /// piano-vs-bass gap ~18 dB vs. FluidSynth's ~5 dB) — the STATIC generator now gets the SAME `0.4×`
+    /// weight on both paths; only the MODULATOR SUM (velocity -> attenuation, incl. SF2 default #1)
+    /// stays full-weight on the ON path. So this test now pins the OPPOSITE relationship: ON and OFF
+    /// must render at PARITY (not 6 dB apart) even for a nonzero static generator.
     ///
     /// Uses `SyntheticSF2.minimal(instrumentGenerators:)` with a KNOWN positive raw
     /// `initialAttenuation` generator (100 cB = 10 dB) and NO modulators beyond SF2 default #1 (that
     /// builder's `pmod`/`imod` chunks carry only their terminal, unreferenced record — see its own
     /// doc comment). Because default #1's output is, per the design spec §4 identity already proven
     /// by `VoiceModulatorApplyTests`/`ModulatorTransformTests`, analytically EQUAL to the OFF path's
-    /// hardcoded `2 * linearToDecibels(velocity/127)` term, that shared velocity-dependent piece
-    /// cancels out of the ON-vs-OFF measured DELTA algebraically:
+    /// hardcoded `2 * linearToDecibels(velocity/127)` term, and the static generator now carries the
+    /// SAME `0.4×` weight on both paths, the two formulas coincide exactly:
     ///
     /// ```
     /// OFF_dB = hardcodedVelTerm(v) - 0.4 * (0.1 * 100) - filterAtten   =  hardcodedVelTerm(v) - 4 - filterAtten
-    /// ON_dB  = -(0.1 * (100 + modSumDefault1(v))) - filterAtten        =  hardcodedVelTerm(v) - 10 - filterAtten
-    /// OFF_dB - ON_dB = -4 - (-10) = 6.0 dB   (exactly, independent of velocity/filterAtten)
+    /// ON_dB  = -(0.4 * (0.1 * 100) + 0.1 * modSumDefault1(v)) - filterAtten
+    ///        = -(4 + (-hardcodedVelTerm(v))) - filterAtten            =  hardcodedVelTerm(v) - 4 - filterAtten
+    /// OFF_dB - ON_dB = 0.0 dB   (exactly, independent of velocity/filterAtten)
     /// ```
     ///
-    /// So the 100 cB raw attenuation weighted at 1.0× (ON) vs 0.4× (OFF) predicts an EXACT 6.0 dB
-    /// gap between the two rendered peaks. A regression that kept `0.4×` on the ON path would
-    /// collapse this measured delta to ~0 dB, well outside the tolerance below.
+    /// A regression back to full (1.0×) weight on the static generator (the pre-Task-14 bug) would
+    /// reopen a ~6 dB gap here; a regression that ALSO weights the modulator sum by `0.4×` (over-
+    /// correcting) would open a gap in the other direction. Both are caught by the same ~0 dB assertion.
     @Test
-    func onPathAppliesFullWeightAttenuationNotOffPathsPointFourWeight() throws {
+    func onPathWeightsStaticAttenuationTheSameAsOffPath() throws {
         let data = SyntheticSF2.minimal(instrumentGenerators: [(48, 100), (53, 0)])
         let fontOff = try SoundFont(data: data)
         let fontOn = try SoundFont(data: data)
@@ -170,11 +183,13 @@ struct ModulatorBehavioralTests {
         let measuredDeltaDb = offPeakDb - onPeakDb
 
         #expect(
-            abs(measuredDeltaDb - 6.0) < 0.5,
+            abs(measuredDeltaDb) < 0.5,
             """
-            expected ON to be ~6.0 dB quieter than OFF (100 cB raw attenuation at FULL 1.0x weight on \
-            ON vs 0.4x weight on OFF); measured delta \(measuredDeltaDb) dB (off=\(offPeakDb) on=\(onPeakDb)). \
-            A ~0 dB delta means the ON path is still using the OFF path's 0.4x coefficient — a real regression.
+            expected ON and OFF to render at parity (100 cB raw attenuation weighted 0.4x on BOTH \
+            paths' static generator term); measured delta \(measuredDeltaDb) dB (off=\(offPeakDb) \
+            on=\(onPeakDb)). A ~6 dB delta means the ON path regressed to full (1.0x) weight on the \
+            static generator — the pre-Task-14 bug that overattenuated real fonts like MuseScore_General's \
+            piano relative to FluidSynth.
             """
         )
     }

@@ -139,6 +139,12 @@ final class Voice {
     /// untouched, preserving every MeltySynth-equivalence oracle vector (design spec's OFF-path
     /// guarantee).
     ///
+    /// `.initialAttenuation` (destination 48) is the one exception to the generic "raw + modSum,
+    /// clamped, then converted" shape above (design spec Task 14, FluidSynth reconciliation): the STATIC
+    /// generator term gets the same Polyphone-derived 0.4x reduction the OFF path applies, while the
+    /// MODULATOR sum (velocity -> attenuation, incl. default #1) stays at full weight — see the ON
+    /// branch's attenuation block below for the derivation and rationale.
+    ///
     /// Full destination coverage (design spec §6, completed): `initialFilterQ` (9, both `resonance` and
     /// the `filterAttenuation` carry-over now read the MODULATED Q consistently — the real-font bug this
     /// task fixes needs a font's `modEnvToFilterFc` modulator to open a deliberately-dark base filter,
@@ -171,9 +177,22 @@ final class Voice {
             let filterAttenuation = 0.5 * filterQDecibels
 
             if velocity > 0 {
-                let attenuationCentibels = region.modulatedGenerator(
-                    .initialAttenuation, velocity: velocity, key: key, clampedTo: 0...1440)
-                noteGain = SoundFontMath.decibelsToLinear(-(0.1 * attenuationCentibels) - filterAttenuation)
+                // Attenuation reconciliation against FluidSynth (Task 14): the STATIC `initialAttenuation`
+                // generator gets the SAME Polyphone-derived 0.4x reduction the OFF path applies below
+                // (`sampleAttenuation`) — applying it at full (1.0x) weight was making fonts with a large
+                // static generator (e.g. MuseScore_General's piano, ~22 dB) render ~13 dB too quiet
+                // relative to FluidSynth. The MODULATOR sum (velocity -> attenuation, including SF2
+                // default #1 and any font-declared crossfade modulators) stays at FULL weight — it
+                // already encodes the intended dynamic range directly, unlike the static generator's
+                // Polyphone fudge factor. For a modulator-free, zero-`initialAttenuation` region this
+                // collapses to `modAttenDb` alone, which — since default #1 is always present in the sum
+                // — equals the OFF path's hardcoded velocity term, preserving the ON == OFF identity.
+                let staticAttenDb = 0.4 * (0.1 * Float(region.rawGenerator(.initialAttenuation)))
+                let modAttenDb = 0.1 * region.modulatorSum(destination: .initialAttenuation, velocity: velocity, key: key)
+                // Upper-bound mirrors the pre-existing 1440 cB (144 dB) SF2 §8.1.3 generator ceiling —
+                // far above anything reachable, kept only as a safety clamp against a pathological font.
+                let attenDb = min(max(0, staticAttenDb + modAttenDb), 144)
+                noteGain = SoundFontMath.decibelsToLinear(-attenDb - filterAttenuation)
             } else {
                 noteGain = 0
             }
