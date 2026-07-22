@@ -10,4 +10,6 @@ follow [Semantic Versioning](https://semver.org/).
 
 - Optional SF2 note-on modulator support (`SynthesizerSettings.enableModulators`,
   default off) — resolves and applies note-on (velocity/key) modulators to
-  initial attenuation and filter cutoff; off by default for MeltySynth parity.
+  attenuation, filter cutoff/Q, LFO/envelope→cutoff depths, pitch depths,
+  coarse/fine/scale tune, mod-LFO→volume, pan, reverb/chorus sends, and the
+  volume/modulation envelope times; off by default for MeltySynth parity.

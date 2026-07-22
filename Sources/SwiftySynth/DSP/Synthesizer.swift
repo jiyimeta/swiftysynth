@@ -47,8 +47,8 @@ public final class Synthesizer {
 
     /// Whether SF2 note-on modulator support is enabled (default false). When true, `noteOn` passes
     /// this through to `Voice.start`, which folds each region's resolved note-on modulator sums
-    /// (velocity/keyNumber-sourced only, design spec §5) into `initialAttenuation` and
-    /// `initialFilterCutoffFrequency` before unit conversion, replacing the hardcoded
+    /// (velocity/keyNumber-sourced only, design spec §5) into the full note-on destination set
+    /// documented on `Voice.start` before unit conversion, replacing the hardcoded
     /// velocity-attenuation curve with SF2 default #1 (now inside the modulator sum). When false,
     /// rendering is byte-identical to the pre-modulator engine (every MeltySynth-equivalence oracle
     /// vector holds).

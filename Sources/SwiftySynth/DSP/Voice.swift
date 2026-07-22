@@ -97,8 +97,8 @@ final class Voice {
 
     private var instrumentPan: Float = 0
 
-    private var instrumentReverb: Float = 0
-    private var instrumentChorus: Float = 0
+    private(set) var instrumentReverb: Float = 0
+    private(set) var instrumentChorus: Float = 0
 
     // Some instruments require fast cutoff change, which can cause pop noise.
     // This is used to smooth out the cutoff frequency.
@@ -145,7 +145,7 @@ final class Voice {
     /// MODULATOR sum (velocity -> attenuation, incl. default #1) stays at full weight — see the ON
     /// branch's attenuation block below for the derivation and rationale.
     ///
-    /// Full destination coverage (design spec §6, completed): `initialFilterQ` (9, both `resonance` and
+    /// Covered note-on destinations (design spec §6): `initialFilterQ` (9, both `resonance` and
     /// the `filterAttenuation` carry-over now read the MODULATED Q consistently — the real-font bug this
     /// task fixes needs a font's `modEnvToFilterFc` modulator to open a deliberately-dark base filter,
     /// and that filter's own declared Q must track it); `modulationLfoToFilterCutoffFrequency` (10) /
@@ -156,7 +156,13 @@ final class Voice {
     /// exactly as `RegionPair.fineTune` already does on the OFF path) / `scaleTuning` (56);
     /// `modulationLfoToVolume` (13) / `pan` (17) / `reverbEffectsSend` (16) / `chorusEffectsSend` (15);
     /// and the volume/modulation envelope timecent generators (`startVolumeEnvelope`/
-    /// `startModulationEnvelope`, below).
+    /// `startModulationEnvelope`, below). Deferred (not yet modulated on either path — read from the raw
+    /// generator regardless of `enableModulators`): `sustainVolumeEnvelope` (37) /
+    /// `sustainModulationEnvelope` (29); the keynum -> envelope-time scalers
+    /// `keyNumberToVolumeEnvelopeHold`/`Decay` (39/40) and `keyNumberToModulationEnvelopeHold`/`Decay`
+    /// (31/32); and the LFO delay/frequency generators (21-24, `startVibratoLfo`/`startModulationLfo`
+    /// take no `enableModulators` parameter). MuseScore_General's piano needs none of these; wiring them
+    /// is left as a follow-up if a font that does surfaces.
     func start(
         region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int,
         enableModulators: Bool = false
@@ -225,9 +231,12 @@ final class Voice {
 
             let panRaw = region.modulatedGenerator(.pan, velocity: velocity, key: key, clampedTo: -500...500)
             instrumentPan = min(max(0.1 * panRaw, -50), 50)
-            instrumentReverb = 0.01 * region.modulatedGenerator(
+            // `region.reverbEffectsSend`/`chorusEffectsSend` getters bake in the SF2 0.1%->fraction
+            // 0.1x scale; `modulatedGenerator` returns the RAW generator, so re-apply that 0.1x
+            // (net 0.001x, matching the OFF path below) before the 0.01x send conversion.
+            instrumentReverb = 0.001 * region.modulatedGenerator(
                 .reverbEffectsSend, velocity: velocity, key: key, clampedTo: 0...1000)
-            instrumentChorus = 0.01 * region.modulatedGenerator(
+            instrumentChorus = 0.001 * region.modulatedGenerator(
                 .chorusEffectsSend, velocity: velocity, key: key, clampedTo: 0...1000)
         } else {
             // OFF path — UNCHANGED from the pre-modulator body (byte-identical).

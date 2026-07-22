@@ -6,8 +6,8 @@ enum DefaultModulators {
     /// Default #1 (SF2 §8.4.1): MIDI note-on velocity to initial attenuation, a concave,
     /// maxToMin, unipolar transform with amount 960 (its `amountSource` is `.none`, i.e.
     /// unmodulated, and its transform op is linear). Its analytic output equals the hardcoded
-    /// velocity-attenuation curve this port already applies elsewhere (`Voice.swift:141`) — see
-    /// `ModulatorTransformTests.default1OutputMatchesHardcodedCurve`.
+    /// velocity-attenuation curve this port already applies elsewhere (`Voice.start`'s OFF branch) —
+    /// see `ModulatorTransformTests.default1OutputMatchesHardcodedCurve`.
     ///
     /// Default #2 (§8.4.2, key number to initial filter cutoff) is deferred (design spec §4) —
     /// `noteOn` deliberately holds only default #1 this release.

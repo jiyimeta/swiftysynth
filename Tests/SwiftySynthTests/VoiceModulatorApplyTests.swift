@@ -169,6 +169,48 @@ struct VoiceModulatorApplyTests {
             cleanWindow != nil,
             "every one of \(windows.count) measured windows netted a positive malloc-zone delta with enableModulators=true — modulatorSum (or Voice.start's ON path) is not allocation-free. windows=\(windows)")
     }
+
+    /// **C1 pin test (critical correctness fix).** `RegionPair.reverbEffectsSend`/`chorusEffectsSend`
+    /// (`RegionPair.swift:125-126`) bake in the SF2 0.1x centibel->fraction scale, so the OFF path's
+    /// `0.01 * region.reverbEffectsSend` (`Voice.swift`'s OFF branch) nets **0.001x** the raw
+    /// generator. The ON path instead reads the RAW generator via `modulatedGenerator` (no 0.1x baked
+    /// in), so it must explicitly re-apply that 0.1x — i.e. also net 0.001x — to match. Before this
+    /// fix the ON path used `0.01 *` directly on the raw generator (net 0.01x, 10x the OFF path),
+    /// which — given the downstream `min(max(channelInfo.reverbSend + instrumentReverb, 0), 1)` clamp
+    /// in `Voice.process` — silently pushed most real-font presets (e.g. MuseScore_General's 312
+    /// preset `reverbEffectsSend` generators, values 20-600) to near-full-wet reverb once modulators
+    /// were enabled. Uses a modulator-free region (no `pmod`/`imod` records at all) so
+    /// `modulatedGenerator`'s `modulatorSum` term is always 0 and the assertion isolates the unit-
+    /// conversion arithmetic alone.
+    @Test
+    func onPathSendConversionMatchesOffPathNotTenTimesLarger() throws {
+        let (pair, data) = try makeSendRegionPair()
+
+        let voiceOn = Voice(sampleRate: 44_100, blockSize: 64)
+        voiceOn.start(
+            region: pair, channel: 0, channelInfo: Channel(isPercussionChannel: false),
+            data: data, key: 60, velocity: 80, enableModulators: true)
+
+        let voiceOff = Voice(sampleRate: 44_100, blockSize: 64)
+        voiceOff.start(
+            region: pair, channel: 0, channelInfo: Channel(isPercussionChannel: false),
+            data: data, key: 60, velocity: 80, enableModulators: false)
+
+        // Raw reverbEffectsSend generator = 500 -> 0.001 * 500 = 0.5; raw chorusEffectsSend = 300 ->
+        // 0.001 * 300 = 0.3. The pre-fix ON path would have produced 5.0 / 3.0 instead (10x too large).
+        #expect(
+            abs(voiceOn.instrumentReverb - 0.5) < 1e-5,
+            "ON reverb send \(voiceOn.instrumentReverb) must equal 0.001 * raw(500) = 0.5, NOT 10x that (5.0)")
+        #expect(
+            abs(voiceOn.instrumentChorus - 0.3) < 1e-5,
+            "ON chorus send \(voiceOn.instrumentChorus) must equal 0.001 * raw(300) = 0.3, NOT 10x that (3.0)")
+        #expect(
+            abs(voiceOn.instrumentReverb - voiceOff.instrumentReverb) < 1e-5,
+            "ON reverb send (\(voiceOn.instrumentReverb)) must match the OFF path (\(voiceOff.instrumentReverb)) — both net 0.001x the raw generator")
+        #expect(
+            abs(voiceOn.instrumentChorus - voiceOff.instrumentChorus) < 1e-5,
+            "ON chorus send (\(voiceOn.instrumentChorus)) must match the OFF path (\(voiceOff.instrumentChorus)) — both net 0.001x the raw generator")
+    }
 }
 
 /// Renders `frames` samples from a fresh note-on and returns the peak absolute sample across both
@@ -196,6 +238,28 @@ private func makeCancelingAttenuationRegionPair() throws -> (RegionPair, [Int16]
     let instrumentRegion = try InstrumentRegion(
         global: [], local: [Generator(type: .sampleID, value: 0)], samples: [header],
         modulators: [makeVelocityToAttenuationModulator(amount: 0)])
+    let instrument = try Instrument(
+        name: "I", zones: [Zone(generators: [Generator(type: .sampleID, value: 0)])], samples: [header])
+    let presetRegion = try PresetRegion(
+        global: [], local: [Generator(type: .instrument, value: 0)], instruments: [instrument])
+    return (RegionPair(preset: presetRegion, instrument: instrumentRegion), data)
+}
+
+/// Direct-construction `RegionPair` (same shape as `makeCancelingAttenuationRegionPair` above) for the
+/// C1 reverb/chorus-send pin test: an instrument region with static `reverbEffectsSend` (raw 500) and
+/// `chorusEffectsSend` (raw 300) generators and NO modulators at all — isolating the ON path's send
+/// unit-conversion arithmetic from any modulator-sum contribution.
+private func makeSendRegionPair() throws -> (RegionPair, [Int16]) {
+    let data: [Int16] = (0..<1_100).map { i in Int16(truncatingIfNeeded: (i % 20) * 1_000 - 9_000) }
+    let header = SampleHeader(
+        name: "S", start: 0, end: 1_000, startLoop: 100, endLoop: 900,
+        sampleRate: 44_100, originalPitch: 60, pitchCorrection: 0, link: 0, sampleType: 1)
+    let instrumentRegion = try InstrumentRegion(
+        global: [], local: [
+            Generator(type: .sampleID, value: 0),
+            Generator(type: .reverbEffectsSend, value: 500),
+            Generator(type: .chorusEffectsSend, value: 300),
+        ], samples: [header])
     let instrument = try Instrument(
         name: "I", zones: [Zone(generators: [Generator(type: .sampleID, value: 0)])], samples: [header])
     let presetRegion = try PresetRegion(

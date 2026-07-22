@@ -116,17 +116,30 @@ at SoundFont load per the SF2 §9.5.1 combining rules (default →
 instrument-override → preset-additive, with global/local-zone supersession)
 and applied once at note start. The SF2 default velocity→`initialAttenuation`
 modulator (default #1) is included and replaces the port's hardcoded velocity
-curve. The resolved modulator sums are currently applied to two generator
-destinations: `initialAttenuation` and `initialFilterCutoffFrequency`.
+curve. The resolved modulator sums are applied to: `initialAttenuation` (48 —
+the static generator keeps the same 0.4x Polyphone-derived reduction the OFF
+path applies, while the modulator sum, including default #1, stays at full
+weight — this FluidSynth reconciliation is what brings ON-path loudness to
+within ~0.2 dB of FluidSynth 3.5.5), `initialFilterCutoffFrequency` (8),
+`initialFilterQ` (9), `modulationLfoToFilterCutoffFrequency` (10),
+`modulationEnvelopeToFilterCutoffFrequency` (11), the pitch depths
+`modulationLfoToPitch` / `vibratoLfoToPitch` / `modulationEnvelopeToPitch`
+(5/6/7), `coarseTune` / `fineTune` / `scaleTuning` (51/52/56),
+`modulationLfoToVolume` (13), `pan` (17), `reverbEffectsSend` /
+`chorusEffectsSend` (16/15), and the volume/modulation envelope delay/attack/
+hold/decay/release timecent generators.
 
 **Not yet supported:**
 - Real-time / continuously-varying modulators — any CC/MIDI-controller
   source, channel or polyphonic pressure, or pitch-wheel source.
 - The synthesized SF2 default modulator #2 (velocity → filter cutoff).
 - Linked modulators.
-- Modulator application to note-on destinations other than attenuation and
-  filter cutoff — e.g. coarse/fine tune, mod-envelope, LFO depth, filter Q.
-  These are recognized and resolved but not yet applied.
+- Modulator application to a handful of remaining note-on destinations:
+  `sustainVolumeEnvelope` (37) / `sustainModulationEnvelope` (29), the
+  keynum→envelope-time scalers (`keyNumberToVolumeEnvelopeHold`/`Decay` and
+  `keyNumberToModulationEnvelopeHold`/`Decay`, 39/40/31/32), and the LFO
+  delay/frequency generators (21–24). These are recognized and resolved but
+  not yet applied — read from the raw generator on both paths.
 
 Invalid or unsupported modulator records, and malformed modulator bag
 indices, are skipped at load and never fail loading; a `pmod`/`imod` chunk

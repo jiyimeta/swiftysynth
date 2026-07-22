@@ -32,8 +32,8 @@ public struct SynthesizerSettings: Sendable {
 
     /// Whether SF2 note-on modulator support is enabled (default false). When true, `Voice.start`
     /// applies each region's resolved note-on modulators (velocity/keyNumber-sourced, evaluated once
-    /// at note-on) to `initialAttenuation` and `initialFilterCutoffFrequency`; when false, rendering
-    /// is byte-identical to the pre-modulator engine.
+    /// at note-on) to the full note-on destination set documented on `Voice.start`; when false,
+    /// rendering is byte-identical to the pre-modulator engine.
     public let enableModulators: Bool
 
     public init(
