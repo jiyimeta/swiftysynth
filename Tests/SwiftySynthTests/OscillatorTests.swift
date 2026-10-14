@@ -9,7 +9,7 @@ struct OscillatorTests {
         var data = (0..<128).map { Int16($0 * 100) }
         data.append(contentsOf: [Int16](repeating: 0, count: 4)) // guard samples past end (SF2 spec provides 46)
         let osc = Oscillator(sampleRate: 44_100)
-        osc.start(data: data, loopMode: .noLoop, sampleRate: 44_100,
+        osc.start(data: WaveData(copying: data), loopMode: .noLoop, sampleRate: 44_100,
                   start: 0, end: 128, startLoop: 0, endLoop: 128,
                   rootKey: 60, coarseTune: 0, fineTune: 0, scaleTuning: 100)
         var block = [Float](repeating: 99, count: 64)
@@ -33,7 +33,7 @@ struct OscillatorTests {
         var data = (0..<96).map { Int16(($0 &* 337) % 8_000) }   // non-degenerate waveform
         data.append(contentsOf: [Int16](repeating: 0, count: 4))
         let osc = Oscillator(sampleRate: 44_100)
-        osc.start(data: data, loopMode: .continuous, sampleRate: 44_100,
+        osc.start(data: WaveData(copying: data), loopMode: .continuous, sampleRate: 44_100,
                   start: 0, end: 96, startLoop: 32, endLoop: 96,
                   rootKey: 60, coarseTune: 0, fineTune: 0, scaleTuning: 100)
         var out = [Float]()
@@ -67,7 +67,7 @@ struct OscillatorTests {
         var data = (0..<128).map { Int16($0 * 100) }
         data.append(contentsOf: [Int16](repeating: 0, count: 4)) // guard samples past end
         let osc = Oscillator(sampleRate: 44_100)
-        osc.start(data: data, loopMode: .noLoop, sampleRate: 44_100,
+        osc.start(data: WaveData(copying: data), loopMode: .noLoop, sampleRate: 44_100,
                   start: 0, end: 128, startLoop: 0, endLoop: 128,
                   rootKey: 60, coarseTune: 0, fineTune: 0, scaleTuning: 100)
         var block = [Float](repeating: 0, count: 64)
@@ -85,7 +85,7 @@ struct OscillatorTests {
         var data = (0..<256).map { Int16($0 * 50) }
         data.append(contentsOf: [Int16](repeating: 0, count: 4))
         let osc = Oscillator(sampleRate: 44_100)
-        osc.start(data: data, loopMode: .noLoop, sampleRate: 44_100,
+        osc.start(data: WaveData(copying: data), loopMode: .noLoop, sampleRate: 44_100,
                   start: 0, end: 256, startLoop: 0, endLoop: 256,
                   rootKey: 60, coarseTune: 0, fineTune: 0, scaleTuning: 100)
         var block = [Float](repeating: 0, count: 64)

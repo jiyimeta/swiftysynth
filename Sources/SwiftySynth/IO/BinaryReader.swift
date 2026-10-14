@@ -28,17 +28,29 @@ public enum SwiftySynthError: Error, CustomStringConvertible {
     }
 }
 
-/// A little-endian byte cursor over `Data`.
+/// A little-endian byte cursor over `Data`, or over a mapped file.
 ///
 /// Ported from `BinaryReaderEx.cs` (MeltySynth, MIT License — see NOTICE),
 /// plus the implicit little-endian primitives of .NET `System.IO.BinaryReader`
 /// that `BinaryReaderEx`'s extension methods build on.
 final class BinaryReader {
-    private let bytes: [UInt8]
+    /// Keeps `bytes` alive: the `ByteBuffer` copied from `Data`, or the `MappedFile` read in place. A sample pool
+    /// read with `readWaveData` holds on to it too.
+    private let owner: AnyObject
+    private let bytes: UnsafeRawBufferPointer
     private(set) var position: Int
 
     init(data: Data) {
-        self.bytes = [UInt8](data)
+        let buffer = ByteBuffer(copying: data)
+        self.owner = buffer
+        self.bytes = buffer.bytes
+        self.position = 0
+    }
+
+    /// Reads `file` in place: nothing is copied, so a sample pool read from it stays a view of the file.
+    init(mappedFile file: MappedFile) {
+        self.owner = file
+        self.bytes = file.bytes
         self.position = 0
     }
 
@@ -79,37 +91,35 @@ final class BinaryReader {
         Int16(bitPattern: try readUInt16())
     }
 
-    /// Reads `count` little-endian `Int16` values in a single bulk copy instead
-    /// of `count` separate `readInt16()` calls. A SoundFont's `smpl` chunk is one
-    /// contiguous block of little-endian `Int16` PCM, which on a little-endian
-    /// host — every Apple and Android target — already matches `Int16`'s
-    /// in-memory layout, so this is one `memcpy`. A big-endian host (never a real
-    /// target here) byte-swaps after the copy, so the result stays correct where
-    /// C#'s host-endian-sensitive `MemoryMarshal.Cast` would not. This matters
-    /// because a General-MIDI font holds tens of millions of samples: the
-    /// per-sample call + bounds-check + throw overhead of `readInt16()` dominates
-    /// load time in unoptimized (`-Onone`) debug builds — tens of seconds for a
-    /// ~200 MB font. Still EOF-safe: a lying, over-claimed `count` throws rather
-    /// than trapping, preserving the never-trap-the-host invariant.
-    func readInt16Array(count: Int) throws -> [Int16] {
+    /// Reads `count` little-endian `Int16` values — a SoundFont's `smpl` chunk, one contiguous block of
+    /// little-endian PCM — as a view of the bytes under the cursor, with nothing copied. On a little-endian host (every
+    /// Apple and Android target) those bytes already ARE the `Int16` values, so the pool is read in place: out of the
+    /// file mapping for a font loaded from a file, out of the reader's own buffer for one loaded from `Data`. A chunk at
+    /// an odd offset (a malformed font; RIFF pads every chunk to an even size) or a big-endian host gets an aligned,
+    /// host-order copy instead, so the result stays correct where C#'s host-endian-sensitive `MemoryMarshal.Cast`
+    /// would not. Still EOF-safe: a lying, over-claimed `count` throws rather than trapping, preserving the
+    /// never-trap-the-host invariant.
+    func readWaveData(count: Int) throws -> WaveData {
         guard count >= 0 else { throw SwiftySynthError.unexpectedEndOfData }
         let byteCount = count * 2
         try requireAvailable(byteCount)
-        let start = position
-        let values = bytes.withUnsafeBytes { raw in
-            [Int16](unsafeUninitializedCapacity: count) { dst, initialized in
-                if count > 0 {
-                    memcpy(dst.baseAddress!, raw.baseAddress! + start, byteCount)
-                }
-                initialized = count
-            }
-        }
+        let chunk = UnsafeRawBufferPointer(rebasing: bytes[position ..< (position + byteCount)])
         position += byteCount
-        #if _endian(big)
-            return values.map { Int16(littleEndian: $0) }
-        #else
-            return values
+        guard count > 0, let start = chunk.baseAddress else { return .empty }
+        #if _endian(little)
+        if Int(bitPattern: start) % MemoryLayout<Int16>.alignment == 0 {
+            return WaveData(owner: owner, base: start.bindMemory(to: Int16.self, capacity: count), count: count)
+        }
         #endif
+        let copy = ByteBuffer(copying: chunk)
+        let values = UnsafeMutableRawPointer(mutating: copy.bytes.baseAddress.unsafelyUnwrapped)
+            .bindMemory(to: Int16.self, capacity: count)
+        #if _endian(big)
+        for index in 0 ..< count {
+            values[index] = Int16(littleEndian: values[index])
+        }
+        #endif
+        return WaveData(owner: copy, base: UnsafePointer(values), count: count)
     }
 
     /// Little-endian, matching .NET `BinaryReader.ReadUInt32`.

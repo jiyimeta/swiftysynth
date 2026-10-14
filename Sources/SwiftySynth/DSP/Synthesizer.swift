@@ -60,8 +60,7 @@ public final class Synthesizer {
     /// The number of voices currently being played.
     public var activeVoiceCount: Int { voices.activeVoiceCount }
 
-    private let presetLookup: [Int: Preset]
-    private let defaultPreset: Preset
+    private let presetTable: PresetTable
 
     /// Channel 9 is percussion. Internal (not private) for @testable tests.
     let channels: [Channel]
@@ -90,30 +89,15 @@ public final class Synthesizer {
         self.enableReverbAndChorus = settings.enableReverbAndChorus
         self.enableModulators = settings.enableModulators
 
-        // Preset lookup: ID = (bank << 16) | patch. First occurrence wins
-        // (C# Dictionary.TryAdd), and the minimum ID becomes the default
-        // preset — for a GM-compatible font, the Grand Piano.
-        var presetLookup = [Int: Preset]()
-        presetLookup.reserveCapacity(soundFont.presets.count)
-        var defaultPreset: Preset? = nil
-        var minPresetId = Int.max
-        for preset in soundFont.presets {
-            let presetId = (preset.bankNumber << 16) | preset.patchNumber
-            if presetLookup[presetId] == nil {
-                presetLookup[presetId] = preset
-            }
-            if presetId < minPresetId {
-                defaultPreset = preset
-                minPresetId = presetId
-            }
-        }
-        guard let defaultPreset else {
+        // Preset lookup (`PresetTable`): ID = (bank << 16) | patch. First
+        // occurrence wins (C# Dictionary.TryAdd), and the minimum ID becomes
+        // the default preset — for a GM-compatible font, the Grand Piano.
+        guard let presetTable = soundFont.presetTable else {
             // C# covers this with Debug.Assert; file-derived data must never
             // trap this port, so an empty preset list throws instead.
             throw SwiftySynthError.invalidSoundFont("The SoundFont contains no presets.")
         }
-        self.presetLookup = presetLookup
-        self.defaultPreset = defaultPreset
+        self.presetTable = presetTable
 
         self.channels = (0..<Synthesizer.channelCount).map {
             Channel(isPercussionChannel: $0 == Synthesizer.percussionChannel)
@@ -218,13 +202,7 @@ public final class Synthesizer {
         }
         let channelInfo = channels[channel]
 
-        let presetId = (channelInfo.bankNumber << 16) | channelInfo.patchNumber
-        var preset = presetLookup[presetId]
-        if preset == nil {
-            let gmPresetId = channelInfo.bankNumber < 128 ? channelInfo.patchNumber : (128 << 16)
-            preset = presetLookup[gmPresetId]
-        }
-        let resolvedPreset = preset ?? defaultPreset
+        let resolvedPreset = presetTable.resolve(bank: channelInfo.bankNumber, patch: channelInfo.patchNumber)
 
         for presetRegion in resolvedPreset.regions where presetRegion.contains(key: key, velocity: velocity) {
             for instrumentRegion in presetRegion.instrument.regions where instrumentRegion.contains(key: key, velocity: velocity) {

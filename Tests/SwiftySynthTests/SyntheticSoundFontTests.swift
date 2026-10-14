@@ -161,7 +161,7 @@ struct SyntheticSoundFontTests {
         #expect(font.info.version.minor == 1)
         #expect(font.info.bankName == "Test Font")
         #expect(font.bitsPerSample == 16)
-        #expect(font.waveData == [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 0, 0, 0, 0])
+        #expect(Array(font.waveData) == [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 0, 0, 0, 0])
         #expect(font.presets.count == 1)
         #expect(font.instruments.count == 1)
         #expect(font.sampleHeaders.count == 1)

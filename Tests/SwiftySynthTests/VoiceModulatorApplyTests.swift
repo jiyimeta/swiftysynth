@@ -230,8 +230,8 @@ private func peakAbs(rendering synth: Synthesizer, frames: Int) -> Float {
 /// directly as the region's already-resolved modulator set (bypassing `ModulatorResolver`, which is
 /// Task 8's own tested concern). `data` is a small nonzero synthetic waveform long enough to back the
 /// sample header's `end`/`endLoop` bounds.
-private func makeCancelingAttenuationRegionPair() throws -> (RegionPair, [Int16]) {
-    let data: [Int16] = (0..<1_100).map { i in Int16(truncatingIfNeeded: (i % 20) * 1_000 - 9_000) }
+private func makeCancelingAttenuationRegionPair() throws -> (RegionPair, WaveData) {
+    let data = WaveData(copying: (0..<1_100).map { i in Int16(truncatingIfNeeded: (i % 20) * 1_000 - 9_000) })
     let header = SampleHeader(
         name: "S", start: 0, end: 1_000, startLoop: 100, endLoop: 900,
         sampleRate: 44_100, originalPitch: 60, pitchCorrection: 0, link: 0, sampleType: 1)
@@ -249,8 +249,8 @@ private func makeCancelingAttenuationRegionPair() throws -> (RegionPair, [Int16]
 /// C1 reverb/chorus-send pin test: an instrument region with static `reverbEffectsSend` (raw 500) and
 /// `chorusEffectsSend` (raw 300) generators and NO modulators at all — isolating the ON path's send
 /// unit-conversion arithmetic from any modulator-sum contribution.
-private func makeSendRegionPair() throws -> (RegionPair, [Int16]) {
-    let data: [Int16] = (0..<1_100).map { i in Int16(truncatingIfNeeded: (i % 20) * 1_000 - 9_000) }
+private func makeSendRegionPair() throws -> (RegionPair, WaveData) {
+    let data = WaveData(copying: (0..<1_100).map { i in Int16(truncatingIfNeeded: (i % 20) * 1_000 - 9_000) })
     let header = SampleHeader(
         name: "S", start: 0, end: 1_000, startLoop: 100, endLoop: 900,
         sampleRate: 44_100, originalPitch: 60, pitchCorrection: 0, link: 0, sampleType: 1)

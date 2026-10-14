@@ -9,7 +9,7 @@ import Foundation
 /// either, just consumes the bytes).
 final class SoundFontSampleData {
     let bitsPerSample: Int
-    let samples: [Int16]
+    let samples: WaveData
 
     /// Reads the whole `LIST`/`sdta` chunk: fourCC + size + `sdta` form,
     /// then iterates sub-chunks by ID until `size` bytes are consumed.
@@ -35,7 +35,7 @@ final class SoundFontSampleData {
         }
 
         var bitsPerSample = 0
-        var samples: [Int16]?
+        var samples: WaveData?
 
         while reader.position < end {
             let id = try reader.readFourCC()
@@ -54,14 +54,12 @@ final class SoundFontSampleData {
                 bitsPerSample = 16
                 let count = Int(chunkSize) / 2
                 // The `smpl` chunk is one contiguous little-endian `Int16` PCM
-                // block, so read it in a single bulk copy (a `memcpy` on the LE
-                // hosts this package targets; `readInt16Array` byte-swaps only on
-                // a big-endian host). This is orders of magnitude faster than a
-                // per-sample `readInt16()` loop — a ~200 MB General-MIDI font
-                // holds ~100M samples, and that loop's per-call overhead alone
-                // cost tens of seconds in `-Onone` debug builds. `readInt16Array`
-                // stays EOF-safe (an over-claimed chunk size throws, never traps).
-                samples = try reader.readInt16Array(count: count)
+                // block, so it is read in place as a view rather than sample by
+                // sample — a ~200 MB General-MIDI font holds ~100M samples, and
+                // even a single bulk copy made all of them dirty memory for as
+                // long as the font lived (`WaveData`). `readWaveData` stays
+                // EOF-safe (an over-claimed chunk size throws, never traps).
+                samples = try reader.readWaveData(count: count)
             case "sm24":
                 // 24-bit audio is not supported; skip past it. `skip`
                 // itself rejects a negative count without trapping.

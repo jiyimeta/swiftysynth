@@ -8,10 +8,14 @@ import Foundation
 public final class SoundFont {
     public let info: SoundFontInfo
     public let bitsPerSample: Int
-    public let waveData: [Int16]
+    /// The sample pool. Read in place from the file for a font loaded with `init(url:)` — see `WaveData`.
+    public let waveData: WaveData
     public let sampleHeaders: [SampleHeader]
     public let presets: [Preset]
     public let instruments: [Instrument]
+    /// How a channel's (bank, patch) resolves to a preset; nil for a font with no presets. Shared by `Synthesizer`
+    /// and `prefetchSamples(bank:patch:)`, so a prefetch warms exactly the samples a note on that channel reads.
+    let presetTable: PresetTable?
 
     /// Loads a SoundFont from `data`. Reads `RIFF` fourCC + u32 size + `sfbk`
     /// form, then the INFO list, sdta list, and pdta list in that order.
@@ -20,11 +24,25 @@ public final class SoundFont {
     /// `checkRegions()` below).
     ///
     /// Swift-idiom adjustment: C# reads from a `Stream`; this port reads the
-    /// whole file into `Data` up front (via `BinaryReader`), keeping the
-    /// reader itself simple.
-    public init(data: Data) throws {
-        let reader = BinaryReader(data: data)
+    /// whole file into memory up front (via `BinaryReader`), keeping the
+    /// reader itself simple. The sample pool stays a view of that copy.
+    public convenience init(data: Data) throws {
+        try self.init(reader: BinaryReader(data: data))
+    }
 
+    /// Loads the SoundFont in the file at `url`, reading it in place through a read-only mapping where the platform
+    /// has one: nothing is copied, and the sample pool's pages are read in only as voices play them (`WaveData`).
+    /// Where the file cannot be mapped it is read into memory instead, which is `init(data:)`. Swift-idiom
+    /// adjustment for C#'s `SoundFont(string path)` constructor, which opens a `FileStream` directly.
+    public convenience init(url: URL) throws {
+        if let file = MappedFile(url: url) {
+            try self.init(reader: BinaryReader(mappedFile: file))
+        } else {
+            try self.init(data: Data(contentsOf: url))
+        }
+    }
+
+    private init(reader: BinaryReader) throws {
         let chunkId = try reader.readFourCC()
         guard chunkId == "RIFF" else {
             throw SwiftySynthError.invalidSoundFont("The RIFF chunk was not found.")
@@ -53,6 +71,7 @@ public final class SoundFont {
         self.sampleHeaders = parameters.sampleHeaders
         self.presets = parameters.presets
         self.instruments = parameters.instruments
+        self.presetTable = PresetTable(presets: parameters.presets)
 
         // Runs unconditionally on every load, matching C#'s `Load` calling
         // `CheckSamples()` then `CheckRegions()` after the parameters are
@@ -142,11 +161,63 @@ public final class SoundFont {
         }
     }
 
-    /// Loads a SoundFont from the file at `url`. Swift-idiom adjustment for
-    /// C#'s `SoundFont(string path)` constructor, which opens a `FileStream`
-    /// directly; this port loads the whole file into `Data` first and
-    /// delegates to `init(data:)`.
-    public convenience init(url: URL) throws {
-        try self.init(data: Data(contentsOf: url))
+    /// Reads in, on the calling thread, every sample a note on a channel set to `bank` / `patch` can play, so the
+    /// first notes of a newly chosen instrument do not fault the font's pages in on the audio render thread. `bank` is
+    /// the channel's effective bank, as `Synthesizer` resolves it: 128 and up on the percussion channel. Resolves the
+    /// preset the same way a note does — the exact (bank, patch), then the General MIDI fallback, then the default
+    /// preset — and reads every region of it, whatever key or velocity would select them.
+    ///
+    /// Only does anything for a font read in place (`waveData.isMemoryMapped`); an owned pool is already resident.
+    /// Call it off the render thread: a cold page is a disk read.
+    public func prefetchSamples(bank: Int, patch: Int) {
+        guard waveData.isMemoryMapped, let presetTable else { return }
+        var seen = Set<ObjectIdentifier>()
+        for presetRegion in presetTable.resolve(bank: bank, patch: patch).regions {
+            for region in presetRegion.instrument.regions where seen.insert(ObjectIdentifier(region)).inserted {
+                let lower = min(region.sampleStart, region.sampleStartLoop)
+                // `+ 1`: the oscillator interpolates toward the sample after the one it is on.
+                let upper = max(region.sampleEnd, region.sampleEndLoop) + 1
+                waveData.prefetch(lower ..< max(lower, upper))
+            }
+        }
+    }
+}
+
+/// The (bank, patch) → preset resolution `Synthesizer.noteOn` plays by. Mirrors MeltySynth: the lookup is keyed
+/// `(bank << 16) | patch`, the first preset with an ID wins (C# `Dictionary.TryAdd`), and the preset with the lowest
+/// ID is the default — for a General MIDI font, the Grand Piano.
+struct PresetTable {
+    let lookup: [Int: Preset]
+    let defaultPreset: Preset
+
+    /// Nil for a font with no presets.
+    init?(presets: [Preset]) {
+        var lookup = [Int: Preset]()
+        lookup.reserveCapacity(presets.count)
+        var defaultPreset: Preset?
+        var minPresetId = Int.max
+        for preset in presets {
+            let presetId = (preset.bankNumber << 16) | preset.patchNumber
+            if lookup[presetId] == nil {
+                lookup[presetId] = preset
+            }
+            if presetId < minPresetId {
+                defaultPreset = preset
+                minPresetId = presetId
+            }
+        }
+        guard let defaultPreset else { return nil }
+        self.lookup = lookup
+        self.defaultPreset = defaultPreset
+    }
+
+    /// The exact (bank, patch); else the General MIDI fallback — the patch under bank 0 for a melodic bank, the
+    /// standard percussion set 128:0 for a drum bank; else the default preset.
+    func resolve(bank: Int, patch: Int) -> Preset {
+        if let preset = lookup[(bank << 16) | patch] {
+            return preset
+        }
+        let gmPresetId = bank < 128 ? patch : (128 << 16)
+        return lookup[gmPresetId] ?? defaultPreset
     }
 }

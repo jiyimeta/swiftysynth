@@ -51,9 +51,9 @@ func sha256Hex(_ data: Data) -> String {
 
 /// SHA-256 over the little-endian byte serialization of the samples — the exact
 /// definition the oracle's dump-font uses.
-func smplSHA256(_ samples: [Int16]) -> String {
+func smplSHA256(_ samples: WaveData) -> String {
     // Apple platforms are little-endian, so the in-memory bytes ARE the LE serialization.
-    let data = samples.withUnsafeBufferPointer { Data(buffer: $0) }
+    let data = Array(samples).withUnsafeBufferPointer { Data(buffer: $0) }
     return sha256Hex(data)
 }
 

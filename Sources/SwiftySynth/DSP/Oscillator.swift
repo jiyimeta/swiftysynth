@@ -9,7 +9,7 @@ import Foundation
 /// `Synthesizer` type yet (DSP is being ported ahead of the top-level
 /// synth), so the constructor takes the output sample rate directly. C#
 /// also keeps `data` as a nullable `short[]?` force-unwrapped at use; the
-/// Swift port stores it as a non-optional `[Int16]` set in `start` (mirrors
+/// Swift port stores it as a non-optional `WaveData` set in `start` (mirrors
 /// C#'s actual lifecycle: `Process`/`Release` are never called before
 /// `Start`).
 final class Oscillator {
@@ -24,7 +24,7 @@ final class Oscillator {
 
     private let synthesizerSampleRate: Int
 
-    private var data: [Int16] = []
+    private var data: WaveData = .empty
     private var loopMode: LoopMode = .noLoop
     private var sampleRate: Int = 0
     private var start: Int = 0
@@ -50,7 +50,7 @@ final class Oscillator {
     }
 
     func start(
-        data: [Int16],
+        data: WaveData,
         loopMode: LoopMode,
         sampleRate: Int,
         start: Int,

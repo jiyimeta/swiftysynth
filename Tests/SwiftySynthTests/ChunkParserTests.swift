@@ -64,7 +64,7 @@ struct ChunkParserTests {
 
         let data = try SoundFontSampleData(reader: BinaryReader(data: w.data))
         #expect(data.bitsPerSample == 16)
-        #expect(data.samples == [1000, -1000, 32_767, -32_768])
+        #expect(Array(data.samples) == [1000, -1000, 32_767, -32_768])
     }
 
     @Test func sampleDataRequiresSmpl() {

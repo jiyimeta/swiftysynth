@@ -164,7 +164,7 @@ final class Voice {
     /// take no `enableModulators` parameter). MuseScore_General's piano needs none of these; wiring them
     /// is left as a follow-up if a font that does surfaces.
     func start(
-        region: RegionPair, channel: Int, channelInfo: Channel, data: [Int16], key: Int, velocity: Int,
+        region: RegionPair, channel: Int, channelInfo: Channel, data: WaveData, key: Int, velocity: Int,
         enableModulators: Bool = false
     ) {
         self.exclusiveClass = region.exclusiveClass
@@ -382,7 +382,7 @@ final class Voice {
     /// takes these three as `Float` (not `Int`) specifically so a fractional modulator contribution
     /// isn't rounded away before reaching the pitch computation. The OFF branch is the EXACT
     /// pre-existing body (`Float(...)`-widened for the shared parameter type), byte-identical.
-    private func startOscillator(region: RegionPair, data: [Int16], key: Int, velocity: Int, enableModulators: Bool) {
+    private func startOscillator(region: RegionPair, data: WaveData, key: Int, velocity: Int, enableModulators: Bool) {
         let coarseTune: Float
         let fineTune: Float
         let scaleTuning: Float
