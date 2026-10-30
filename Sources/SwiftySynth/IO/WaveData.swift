@@ -125,8 +125,10 @@ final class MappedFile {
         var status = stat()
         guard fstat(descriptor, &status) == 0, status.st_size > 0 else { return nil }
         let length = Int(status.st_size)
-        guard let address = mmap(nil, length, PROT_READ, MAP_PRIVATE, descriptor, 0),
-              address != UnsafeMutableRawPointer(bitPattern: -1)
+        // Darwin and Glibc import `mmap` as returning an optional pointer, Android's Bionic as a non-optional one;
+        // widening to an optional here reads the same on all three.
+        let mapped: UnsafeMutableRawPointer? = mmap(nil, length, PROT_READ, MAP_PRIVATE, descriptor, 0)
+        guard let address = mapped, address != UnsafeMutableRawPointer(bitPattern: -1)
         else { return nil }
         bytes = UnsafeRawBufferPointer(start: address, count: length)
         #else

@@ -13,6 +13,8 @@ map), and an idiomatic Swift API over a faithful, oracle-pinned core.
 ## Requirements
 
 - Swift 6 (swift-tools-version 6.0), macOS 13+ / iOS 16+
+- The `SwiftySynth` target also builds for Android with the swift.org toolchain and Android SDK (checked with 6.3.3,
+  `--swift-sdk aarch64-unknown-linux-android28`); the example and spike executables are Apple-only.
 - The core library depends on Foundation only — never AVFoundation. Host
   audio I/O (e.g. an `AVAudioSourceNode` render callback) belongs to the
   embedding app.
