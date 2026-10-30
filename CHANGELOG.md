@@ -4,6 +4,20 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `Synthesizer.choke(key:on:)` fades a key's voices to silence within `Synthesizer.chokeReleaseTime` (50 ms) from
+  their current level, ignoring the hold pedal — for cymbal chokes, whose SoundFont release a note-off cannot cut
+  short. An extension beyond MeltySynth: streams that never call it render exactly as before (see the README's
+  "Extensions beyond MeltySynth").
+
+### Fixed
+
+- The library builds for Android (swift.org 6.3.3 Android SDK): `Float` overloads of the libm functions the Android
+  overlay lacks, and Bionic's non-optional `mmap` result.
+
 ## 0.3.0 - 2026-10-14
 
 ### Changed

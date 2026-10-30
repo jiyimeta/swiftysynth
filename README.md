@@ -91,7 +91,8 @@ resonant low-pass), 16 MIDI channels (channel 9 percussion) with CC/RPN
 state, priority voice stealing (polyphony 8–256, default 64), Freeverb
 reverb + chorus, SMF format 0/1 + General MIDI, RPG Maker / Incredible
 Machine / Final Fantasy loop markers, optional SF2 note-on modulator
-support (off by default — see [Modulators](#modulators)).
+support (off by default — see [Modulators](#modulators)), and a choke call
+(see [Choke](#choke)).
 
 Not supported — canonical-faithful stances, by design: `sm24` 24-bit
 samples; SMF format 2 (throws `.invalidMidiFile`); real-time SF2
@@ -99,7 +100,32 @@ modulators, the synthesized default filter-cutoff modulator, and linked
 modulators (see [Modulators](#modulators)); NRPN (ignored, as in canonical
 `Channel.cs`).
 
-## Modulators
+## Extensions beyond MeltySynth
+
+SwiftySynth is a faithful port of MeltySynth. The features in this section go
+beyond it. Each one is off unless the host asks for it, and none changes what
+a stream that does not ask renders — the MeltySynth-equivalence oracles stay
+byte-identical.
+
+### Choke
+
+`Synthesizer.choke(key:on:)` fades every active voice on that channel and key
+to silence within `Synthesizer.chokeReleaseTime` (50 ms), starting from the
+level each voice is at. The hold pedal does not hold a choked voice, and a
+voice already releasing faster keeps its own release. Like a note-off, it
+takes effect once the voice has played its minimum duration.
+
+**Why.** A cymbal's SoundFont release can be tens of seconds (a crash in
+GeneralUser-GS has 48.5 s), which is right for an undamped cymbal but means a
+note-off cannot stop it. Drummers write the stop explicitly — the choke mark —
+and a score player needs a way to honor it with any SoundFont.
+
+**A method, not a MIDI message.** MIDI has no choke, and SwiftySynth does not
+invent one: how a score asks for a choke is the host's decision. A host that
+plays a `MidiFile` can carry its own marker in the file and turn it into a
+`choke` call from `MidiFileSequencer.onSend`.
+
+### Modulators
 
 Optional, **default OFF**. Enable via:
 
