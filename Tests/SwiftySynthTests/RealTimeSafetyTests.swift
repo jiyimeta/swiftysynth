@@ -268,6 +268,7 @@ struct RealTimeSafetyTests {
                 if i == 100 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x07, data2: 90) }
                 if i == 125 { synth.processMidiMessage(channel: 0, command: 0xB0, data1: 0x5B, data2: 100) }  // reverb-send ramp
                 if i == 150 { for key in 22..<40 { synth.noteOff(key: key, on: 0) } }
+                if i == 175 { for key in 40..<50 { synth.choke(key: key, on: 0) } }
                 renderInto(synth, &left, &right, 0..<512)
             }
             var after = malloc_statistics_t()

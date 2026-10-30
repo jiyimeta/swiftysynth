@@ -420,6 +420,19 @@ final class Voice {
         }
     }
 
+    /// Extension beyond MeltySynth (`Synthesizer.choke`): like `end()`, but the release ignores the hold pedal and falls
+    /// to silence within `Synthesizer.chokeReleaseTime`. Still waits out `minimumVoiceDuration`, as a note-off does.
+    func choke() {
+        switch voiceState {
+        case .playing, .releaseRequested:
+            voiceState = .chokeRequested
+        case .chokeRequested:
+            break
+        case .released:
+            volEnv.release(maxTime: Synthesizer.chokeReleaseTime)
+        }
+    }
+
     /// Mirrors `Voice.Kill`: silences the voice with no release phase. The
     /// voice stays in the pool until its next `process()` returns false —
     /// and, critically for stealing, `priority` reads 0 in the meantime, so
@@ -524,6 +537,12 @@ final class Voice {
             oscillator.release()
 
             voiceState = .released
+        } else if voiceState == .chokeRequested {
+            volEnv.release(maxTime: Synthesizer.chokeReleaseTime)
+            modEnv.release()
+            oscillator.release()
+
+            voiceState = .released
         }
     }
 
@@ -543,6 +562,7 @@ final class Voice {
     private enum VoiceState {
         case playing
         case releaseRequested
+        case chokeRequested
         case released
     }
 }

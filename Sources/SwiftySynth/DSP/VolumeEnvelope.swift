@@ -67,6 +67,18 @@ final class VolumeEnvelope {
         releaseLevel = value
     }
 
+    /// Extension beyond MeltySynth (`Synthesizer.choke`): releases from the current level at a slope no shallower than
+    /// one that falls the full release depth in `maxTime` seconds. The region's own release stays when it is steeper,
+    /// and a release already under way restarts from where it is only if the new slope is steeper.
+    func release(maxTime: Float) {
+        let slope = min(releaseSlope, -9.226 / Double(maxTime))
+        if stage == .release && slope >= releaseSlope {
+            return
+        }
+        releaseSlope = slope
+        release()
+    }
+
     @discardableResult
     func process() -> Bool {
         process(synthesizerBlockSize)

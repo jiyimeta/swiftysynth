@@ -230,6 +230,28 @@ public final class Synthesizer {
         }
     }
 
+    /// How long a choke takes to fall to silence, in seconds. See `choke(key:on:)`.
+    public static let chokeReleaseTime: Float = 0.05
+
+    /// Chokes a note: every active voice at (channel, key) fades to silence within `chokeReleaseTime`, from the level
+    /// it is at, whatever its SoundFont release and whatever the hold pedal says — the hand grabbing a ringing cymbal.
+    /// A voice already releasing faster keeps its own release.
+    ///
+    /// An extension beyond MeltySynth, which has no such call: a stream that never calls it renders exactly as before.
+    /// It is a method rather than a MIDI message on purpose — how a score asks for a choke is the host's business.
+    public func choke(key: Int, on channel: Int) {
+        guard 0 <= channel && channel < channels.count else {
+            return
+        }
+
+        for i in 0..<voices.activeVoiceCount {
+            let voice = voices[i]
+            if voice.channel == channel && voice.key == key {
+                voice.choke()
+            }
+        }
+    }
+
     /// Stops all notes. Mirrors `Synthesizer.NoteOffAll(bool)`: immediate
     /// clears the pool outright; otherwise every voice enters release.
     public func noteOffAll(immediate: Bool) {
