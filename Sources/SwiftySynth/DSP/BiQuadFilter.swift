@@ -76,19 +76,37 @@ final class BiQuadFilter {
     /// passes through untouched; only the filter's state is primed from the
     /// block's last two samples (so a later `setLowPassFilter` call resumes
     /// continuity without a discontinuity click).
+    ///
+    /// Written for unoptimized builds (see `README.md`, "Performance in debug builds"): coefficients and state live in
+    /// locals for the block and are stored back once, and the block is read and written through a pointer.
     func process(_ block: inout [Float]) {
         if active {
-            for t in 0..<block.count {
-                let input = block[t]
-                let output = a0 * input + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+            let a0 = self.a0, a1 = self.a1, a2 = self.a2, a3 = self.a3, a4 = self.a4
+            var x1 = self.x1, x2 = self.x2, y1 = self.y1, y2 = self.y2
 
-                x2 = x1
-                x1 = input
-                y2 = y1
-                y1 = output
+            block.withUnsafeMutableBufferPointer { buffer in
+                guard let samples = buffer.baseAddress else { return }
+                let count = buffer.count
 
-                block[t] = output
+                var t = 0
+                while t < count {
+                    let input = samples[t]
+                    let output = a0 * input + a1 * x1 + a2 * x2 - a3 * y1 - a4 * y2
+
+                    x2 = x1
+                    x1 = input
+                    y2 = y1
+                    y1 = output
+
+                    samples[t] = output
+                    t += 1
+                }
             }
+
+            self.x1 = x1
+            self.x2 = x2
+            self.y1 = y1
+            self.y2 = y2
         } else {
             x2 = block[block.count - 2]
             x1 = block[block.count - 1]

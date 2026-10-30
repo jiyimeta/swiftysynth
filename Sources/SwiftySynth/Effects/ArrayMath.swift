@@ -17,9 +17,19 @@
 enum ArrayMath {
     /// `destination[i] += a * x[i]` over `destination`'s length.
     /// Callers pass equal-length blocks (`blockSize`).
+    /// Through pointers, for unoptimized builds (see `README.md`, "Performance in debug builds").
     static func multiplyAdd(_ a: Float, _ x: [Float], _ destination: inout [Float]) {
-        for i in 0..<destination.count {
-            destination[i] += a * x[i]
+        precondition(x.count >= destination.count, "multiplyAdd source shorter than destination")
+        x.withUnsafeBufferPointer { source in
+            destination.withUnsafeMutableBufferPointer { target in
+                guard let s = source.baseAddress, let d = target.baseAddress else { return }
+                let count = target.count
+                var i = 0
+                while i < count {
+                    d[i] += a * s[i]
+                    i += 1
+                }
+            }
         }
     }
 }

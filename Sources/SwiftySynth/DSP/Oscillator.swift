@@ -22,6 +22,11 @@ final class Oscillator {
     private static let fracUnit: Int64 = 1 << fracBits
     private static let fpToSample: Float = 1 / (32_768 * Float(fracUnit))
 
+    /// Stands in for an empty `WaveData`'s nil pool pointer, so the fill loops unwrap it once per block. It is never
+    /// read: every sample read is bounds-checked first, and an empty pool's count is 0 — which is also why sharing it
+    /// across threads is safe.
+    nonisolated(unsafe) private static let emptyPool = UnsafePointer<Int16>(bitPattern: MemoryLayout<Int16>.alignment)!
+
     private let synthesizerSampleRate: Int
 
     private var data: WaveData = .empty
@@ -125,58 +130,97 @@ final class Oscillator {
         }
     }
 
-    /// Mirrors `Oscillator.FillBlock_NoLoop`.
+    /// Mirrors `Oscillator.FillBlock_NoLoop`. Written for unoptimized builds (see `README.md`, "Performance in debug
+    /// builds"): the read position lives in a local for the block, the block and the sample pool are read and written
+    /// through pointers, each sample read keeps `WaveData`'s bounds check inline, and the shifts are the masking
+    /// `&>>`/`&<<`, which equal the smart shifts for this constant 24-bit amount.
     private func fillBlockNoLoop(_ block: inout [Float], _ pitchRatio_fp: Int64) -> Bool {
-        for t in 0..<block.count {
-            let index = Int(position_fp >> Oscillator.fracBits)
+        let data = self.data
+        let samples = data.base ?? Oscillator.emptyPool
+        let sampleCount = data.count
+        let fracBits = Oscillator.fracBits
+        let fracMask = Oscillator.fracUnit - 1
+        let fpToSample = Oscillator.fpToSample
+        let end = self.end
+        var position_fp = self.position_fp
+        defer { self.position_fp = position_fp }
 
-            if index >= end {
-                if t > 0 {
-                    for i in t..<block.count {
-                        block[i] = 0
+        return block.withUnsafeMutableBufferPointer { buffer in
+            guard let out = buffer.baseAddress else { return true }
+            let count = buffer.count
+
+            var t = 0
+            while t < count {
+                let index = Int(position_fp &>> fracBits)
+
+                if index >= end {
+                    if t > 0 {
+                        (out + t).update(repeating: 0, count: count - t)
+                        return true
+                    } else {
+                        return false
                     }
-                    return true
-                } else {
-                    return false
                 }
+
+                precondition(index >= 0 && index + 1 < sampleCount, "WaveData index out of range")
+                let x1 = Int64(samples[index])
+                let x2 = Int64(samples[index + 1])
+                let a_fp = position_fp & fracMask
+                out[t] = fpToSample * Float((x1 &<< fracBits) + a_fp * (x2 - x1))
+
+                position_fp += pitchRatio_fp
+                t += 1
             }
 
-            let x1 = Int64(data[index])
-            let x2 = Int64(data[index + 1])
-            let a_fp = position_fp & (Oscillator.fracUnit - 1)
-            block[t] = Oscillator.fpToSample * Float((x1 << Oscillator.fracBits) + a_fp * (x2 - x1))
-
-            position_fp += pitchRatio_fp
+            return true
         }
-
-        return true
     }
 
-    /// Mirrors `Oscillator.FillBlock_Continuous`.
+    /// Mirrors `Oscillator.FillBlock_Continuous`. Written for unoptimized builds, as `fillBlockNoLoop` is.
     private func fillBlockContinuous(_ block: inout [Float], _ pitchRatio_fp: Int64) -> Bool {
-        let endLoop_fp = Int64(endLoop) << Oscillator.fracBits
+        let data = self.data
+        let samples = data.base ?? Oscillator.emptyPool
+        let sampleCount = data.count
+        let fracBits = Oscillator.fracBits
+        let fracMask = Oscillator.fracUnit - 1
+        let fpToSample = Oscillator.fpToSample
+        let endLoop = self.endLoop
+        var position_fp = self.position_fp
+        defer { self.position_fp = position_fp }
+
+        let endLoop_fp = Int64(endLoop) &<< fracBits
 
         let loopLength = Int64(endLoop - startLoop)
-        let loopLength_fp = loopLength << Oscillator.fracBits
+        let loopLength_fp = loopLength &<< fracBits
 
-        for t in 0..<block.count {
-            if position_fp >= endLoop_fp {
-                position_fp -= loopLength_fp
+        block.withUnsafeMutableBufferPointer { buffer in
+            guard let out = buffer.baseAddress else { return }
+            let count = buffer.count
+
+            var t = 0
+            while t < count {
+                if position_fp >= endLoop_fp {
+                    position_fp -= loopLength_fp
+                }
+
+                let index1 = Int(position_fp &>> fracBits)
+                var index2 = index1 + 1
+
+                if index2 >= endLoop {
+                    index2 -= Int(loopLength)
+                }
+
+                precondition(
+                    index1 >= 0 && index1 < sampleCount && index2 >= 0 && index2 < sampleCount,
+                    "WaveData index out of range")
+                let x1 = Int64(samples[index1])
+                let x2 = Int64(samples[index2])
+                let a_fp = position_fp & fracMask
+                out[t] = fpToSample * Float((x1 &<< fracBits) + a_fp * (x2 - x1))
+
+                position_fp += pitchRatio_fp
+                t += 1
             }
-
-            let index1 = Int(position_fp >> Oscillator.fracBits)
-            var index2 = index1 + 1
-
-            if index2 >= endLoop {
-                index2 -= Int(loopLength)
-            }
-
-            let x1 = Int64(data[index1])
-            let x2 = Int64(data[index2])
-            let a_fp = position_fp & (Oscillator.fracUnit - 1)
-            block[t] = Oscillator.fpToSample * Float((x1 << Oscillator.fracBits) + a_fp * (x2 - x1))
-
-            position_fp += pitchRatio_fp
         }
 
         return true

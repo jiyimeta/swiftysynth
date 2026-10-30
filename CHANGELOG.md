@@ -4,6 +4,15 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- The per-sample loops (oscillator, filter, mix, reverb, chorus) run about 10× faster in unoptimized builds — 63
+  voices with effects went from 127% to 12% of real time in a debug build on an M-series Mac — so an app's debug
+  build can play back in real time. Release builds got faster too (2.2% → 1.2%). Rendered PCM is bit-identical, debug
+  and release alike (see the README's "Performance in debug builds").
+
 ## 0.4.0 - 2026-10-31
 
 ### Added

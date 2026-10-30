@@ -46,19 +46,45 @@ final class Chorus {
     /// Mirrors `Chorus.Process`: per sample — read both fractionally
     /// delayed taps (interpolating in Double), advance both table indexes,
     /// THEN write the current inputs and advance the ring buffer.
+    ///
+    /// Written for unoptimized builds (see `README.md`, "Performance in debug builds"): the delay lines are moved
+    /// into locals for the block (`swap`, so they stay uniquely referenced and are written in place) and the indexes
+    /// live in locals; all are stored back once.
     func process(inputLeft: [Float], inputRight: [Float],
                  outputLeft: inout [Float], outputRight: inout [Float]) {
-        for t in 0..<outputLeft.count {
+        var bufferL: [Float] = []
+        var bufferR: [Float] = []
+        swap(&bufferL, &self.bufferL)
+        swap(&bufferR, &self.bufferR)
+        let delayTable = self.delayTable
+        var bufferIndex = self.bufferIndex
+        var delayTableIndexL = self.delayTableIndexL
+        var delayTableIndexR = self.delayTableIndexR
+        defer {
+            swap(&bufferL, &self.bufferL)
+            swap(&bufferR, &self.bufferR)
+            self.bufferIndex = bufferIndex
+            self.delayTableIndexL = delayTableIndexL
+            self.delayTableIndexR = delayTableIndexR
+        }
+
+        let bufferCountL = bufferL.count
+        let bufferCountR = bufferR.count
+        let delayTableCount = delayTable.count
+        let count = outputLeft.count
+
+        var t = 0
+        while t < count {
             do {
                 var position = Double(bufferIndex) - Double(delayTable[delayTableIndexL])
                 if position < 0 {
-                    position += Double(bufferL.count)
+                    position += Double(bufferCountL)
                 }
 
                 let index1 = Int(position)
                 var index2 = index1 + 1
 
-                if index2 == bufferL.count {
+                if index2 == bufferCountL {
                     index2 = 0
                 }
 
@@ -68,7 +94,7 @@ final class Chorus {
                 outputLeft[t] = Float(x1 + a * (x2 - x1))
 
                 delayTableIndexL += 1
-                if delayTableIndexL == delayTable.count {
+                if delayTableIndexL == delayTableCount {
                     delayTableIndexL = 0
                 }
             }
@@ -76,13 +102,13 @@ final class Chorus {
             do {
                 var position = Double(bufferIndex) - Double(delayTable[delayTableIndexR])
                 if position < 0 {
-                    position += Double(bufferR.count)
+                    position += Double(bufferCountR)
                 }
 
                 let index1 = Int(position)
                 var index2 = index1 + 1
 
-                if index2 == bufferR.count {
+                if index2 == bufferCountR {
                     index2 = 0
                 }
 
@@ -92,7 +118,7 @@ final class Chorus {
                 outputRight[t] = Float(x1 + a * (x2 - x1))
 
                 delayTableIndexR += 1
-                if delayTableIndexR == delayTable.count {
+                if delayTableIndexR == delayTableCount {
                     delayTableIndexR = 0
                 }
             }
@@ -100,9 +126,10 @@ final class Chorus {
             bufferL[bufferIndex] = inputLeft[t]
             bufferR[bufferIndex] = inputRight[t]
             bufferIndex += 1
-            if bufferIndex == bufferL.count {
+            if bufferIndex == bufferCountL {
                 bufferIndex = 0
             }
+            t += 1
         }
     }
 

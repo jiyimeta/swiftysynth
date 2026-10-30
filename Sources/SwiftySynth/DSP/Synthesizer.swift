@@ -328,11 +328,20 @@ public final class Synthesizer {
 
             let srcRem = blockSize - blockRead
             let dstRem = left.count - wrote
-            let rem = min(srcRem, dstRem)
+            let rem = dstRem < srcRem ? dstRem : srcRem
 
-            for i in 0..<rem {
-                left[wrote + i] = blockLeft[blockRead + i]
-                right[wrote + i] = blockRight[blockRead + i]
+            // A bulk copy rather than a per-sample loop, for unoptimized builds (see `README.md`, "Performance in
+            // debug builds"). The ranges are in bounds by construction: `rem` fits both what is left of the block and
+            // what is left of the caller's buffers.
+            let readStart = blockRead
+            let writeStart = wrote
+            blockLeft.withUnsafeBufferPointer { source in
+                UnsafeMutableBufferPointer(rebasing: left[writeStart..<writeStart + rem])
+                    .update(fromContentsOf: source[readStart..<readStart + rem])
+            }
+            blockRight.withUnsafeBufferPointer { source in
+                UnsafeMutableBufferPointer(rebasing: right[writeStart..<writeStart + rem])
+                    .update(fromContentsOf: source[readStart..<readStart + rem])
             }
 
             blockRead += rem
@@ -348,10 +357,19 @@ public final class Synthesizer {
     private func renderBlock() {
         voices.process()
 
-        for i in 0..<blockLeft.count {
-            blockLeft[i] = 0
-            blockRight[i] = 0
+        // The mix buffers are moved into locals for the block (`swap`, so they stay uniquely referenced and are
+        // written in place), for unoptimized builds (see `README.md`, "Performance in debug builds").
+        var blockLeft: [Float] = []
+        var blockRight: [Float] = []
+        swap(&blockLeft, &self.blockLeft)
+        swap(&blockRight, &self.blockRight)
+        defer {
+            swap(&blockLeft, &self.blockLeft)
+            swap(&blockRight, &self.blockRight)
         }
+
+        Synthesizer.clear(&blockLeft)
+        Synthesizer.clear(&blockRight)
         for i in 0..<voices.activeVoiceCount {
             let voice = voices[i]
 
@@ -371,10 +389,8 @@ public final class Synthesizer {
         // return at masterVolume. All buffers preallocated in `Effects`;
         // this path allocates nothing (spec §8).
         if let effects {
-            for i in 0..<effects.chorusInputLeft.count {
-                effects.chorusInputLeft[i] = 0
-                effects.chorusInputRight[i] = 0
-            }
+            Synthesizer.clear(&effects.chorusInputLeft)
+            Synthesizer.clear(&effects.chorusInputRight)
             for i in 0..<voices.activeVoiceCount {
                 let voice = voices[i]
 
@@ -392,9 +408,7 @@ public final class Synthesizer {
             ArrayMath.multiplyAdd(masterVolume, effects.chorusOutputLeft, &blockLeft)
             ArrayMath.multiplyAdd(masterVolume, effects.chorusOutputRight, &blockRight)
 
-            for i in 0..<effects.reverbInput.count {
-                effects.reverbInput[i] = 0
-            }
+            Synthesizer.clear(&effects.reverbInput)
             for i in 0..<voices.activeVoiceCount {
                 let voice = voices[i]
 
@@ -416,22 +430,43 @@ public final class Synthesizer {
     /// - `max(previousGain, currentGain) < SoundFontMath.nonAudible` → skip.
     /// - `abs(currentGain - previousGain) < 1.0e-3` → flat multiply-add.
     /// - otherwise → linear ramp, stepping by `(current - previous) / blockSize`.
+    ///
+    /// Through pointers, for unoptimized builds (see `README.md`, "Performance in debug builds").
     private func writeBlock(previousGain: Float, currentGain: Float, source: [Float], destination: inout [Float]) {
         if max(previousGain, currentGain) < SoundFontMath.nonAudible {
             return
         }
 
-        if abs(currentGain - previousGain) < 1.0e-3 {
-            for t in 0..<destination.count {
-                destination[t] += currentGain * source[t]
+        precondition(source.count >= destination.count, "writeBlock source shorter than destination")
+        let step = inverseBlockSize * (currentGain - previousGain)
+        let flat = abs(currentGain - previousGain) < 1.0e-3
+        source.withUnsafeBufferPointer { sourceBuffer in
+            destination.withUnsafeMutableBufferPointer { destinationBuffer in
+                guard let s = sourceBuffer.baseAddress, let d = destinationBuffer.baseAddress else { return }
+                let count = destinationBuffer.count
+                var t = 0
+                if flat {
+                    while t < count {
+                        d[t] += currentGain * s[t]
+                        t += 1
+                    }
+                } else {
+                    var gain = previousGain
+                    while t < count {
+                        d[t] += gain * s[t]
+                        gain += step
+                        t += 1
+                    }
+                }
             }
-        } else {
-            let step = inverseBlockSize * (currentGain - previousGain)
-            var gain = previousGain
-            for t in 0..<destination.count {
-                destination[t] += gain * source[t]
-                gain += step
-            }
+        }
+    }
+
+    /// Zeroes `buffer` in place.
+    private static func clear(_ buffer: inout [Float]) {
+        buffer.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            base.update(repeating: 0, count: buffer.count)
         }
     }
 

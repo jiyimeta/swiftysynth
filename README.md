@@ -83,6 +83,26 @@ sequencer.play(midi, loop: true)
   `nonisolated static` factory — a block formed in a `@MainActor` context
   traps on the audio thread (see `Sources/SwiftySynthSpike`).
 
+## Performance in debug builds
+
+An app's debug build compiles its packages without optimization (`-Onone`), and a package cannot opt one target out
+of that. The per-sample loops — oscillator, filter, mix, reverb, chorus — are therefore written so that they stay fast
+unoptimized, where generic Swift idioms each cost a runtime call per sample:
+
+- Stored properties of the DSP classes are copied into locals for the block and stored back once. A class property
+  read or written inside the loop is a dynamic exclusivity check (`swift_beginAccess`) per access.
+- Buffers are read and written through `withUnsafe(Mutable)BufferPointer`'s base address. A pointer subscript is
+  `@_transparent`, so it is inlined even at `-Onone`; an `Array` or buffer-pointer subscript is a call, with a
+  uniqueness check on every write. Lengths are checked once before the loop, and every sample-pool read keeps its
+  bounds check. (The chorus, a fixed cost per block rather than per voice, only moves its delay lines into locals.)
+- Loops are `while` loops, not `for … in 0..<n` (an iterator call per step), and the generic helpers have concrete
+  spellings with the same result: `.magnitude` for `abs`, a comparison for `min`, `&>>`/`&<<` for a shift by a
+  constant in range.
+
+None of this changes the arithmetic or its order: rendered PCM is bit-identical to the plain loops in both debug and
+release builds. Measured on an M-series Mac, debug, 63 voices with reverb and chorus: 127% of real time before,
+12% after (release: 2.2% → 1.2%). Keep new per-sample code in the same shape.
+
 ## Scope
 
 Supported: full SF2 structural parse (16-bit `smpl`), the complete

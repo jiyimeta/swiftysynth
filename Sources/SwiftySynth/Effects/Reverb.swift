@@ -127,11 +127,15 @@ final class Reverb {
     /// are cleared first (the combs ADD); allpasses then run in series in
     /// place; the wet1/wet2 rotation is skipped at the default settings.
     func process(input: [Float], outputLeft: inout [Float], outputRight: inout [Float]) {
-        for i in 0..<outputLeft.count {
+        var i = 0
+        while i < outputLeft.count {
             outputLeft[i] = 0
+            i += 1
         }
-        for i in 0..<outputRight.count {
+        i = 0
+        while i < outputRight.count {
             outputRight[i] = 0
+            i += 1
         }
 
         for cf in cfsL {
@@ -149,11 +153,15 @@ final class Reverb {
 
         // With the default settings, we can skip this part.
         if 1 - wet1 > 1.0e-3 || wet2 > 1.0e-3 {
-            for t in 0..<input.count {
+            let wet1 = self.wet1
+            let wet2 = self.wet2
+            var t = 0
+            while t < input.count {
                 let left = outputLeft[t]
                 let right = outputRight[t]
                 outputLeft[t] = left * wet1 + right * wet2
                 outputRight[t] = right * wet1 + left * wet2
+                t += 1
             }
         }
     }
@@ -259,43 +267,71 @@ final class Reverb {
             filterStore = 0
         }
 
+        /// Written for unoptimized builds (see `README.md`, "Performance in debug builds"): the state lives in locals,
+        /// the delay line and both blocks are read and written through pointers, and `abs` is spelled `.magnitude`,
+        /// which is what the generic `abs` returns for a `Float`.
         func process(input inputBlock: [Float], output outputBlock: inout [Float]) {
-            var blockIndex = 0
-            while blockIndex < outputBlock.count {
-                if bufferIndex == buffer.count {
-                    bufferIndex = 0
-                }
+            precondition(inputBlock.count >= outputBlock.count, "comb input shorter than output")
+            var bufferIndex = self.bufferIndex
+            var filterStore = self.filterStore
+            defer {
+                self.bufferIndex = bufferIndex
+                self.filterStore = filterStore
+            }
+            let feedback = self.feedback
+            let damp1 = self.damp1
+            let damp2 = self.damp2
 
-                let srcRem = buffer.count - bufferIndex
-                let dstRem = outputBlock.count - blockIndex
-                let rem = min(srcRem, dstRem)
+            buffer.withUnsafeMutableBufferPointer { delayLine in
+                inputBlock.withUnsafeBufferPointer { inputBuffer in
+                    outputBlock.withUnsafeMutableBufferPointer { outputBuffer in
+                        guard let line = delayLine.baseAddress, let input = inputBuffer.baseAddress,
+                              let output = outputBuffer.baseAddress
+                        else { return }
+                        let bufferCount = delayLine.count
+                        let blockCount = outputBuffer.count
 
-                for t in 0..<rem {
-                    let blockPos = blockIndex + t
-                    let bufferPos = bufferIndex + t
+                        var blockIndex = 0
+                        while blockIndex < blockCount {
+                            if bufferIndex == bufferCount {
+                                bufferIndex = 0
+                            }
 
-                    let input = inputBlock[blockPos]
+                            let srcRem = bufferCount - bufferIndex
+                            let dstRem = blockCount - blockIndex
+                            let rem = dstRem < srcRem ? dstRem : srcRem
 
-                    // The following ifs are to avoid performance problems due
-                    // to denormalized numbers (C# comment retained: the
-                    // simple abs-threshold flush outperformed the original
-                    // unsafe-cast detection).
-                    var output = buffer[bufferPos]
-                    if abs(output) < 1.0e-6 {
-                        output = 0
+                            var t = 0
+                            while t < rem {
+                                let blockPos = blockIndex + t
+                                let bufferPos = bufferIndex + t
+
+                                let inputSample = input[blockPos]
+
+                                // The following ifs are to avoid performance problems due
+                                // to denormalized numbers (C# comment retained: the
+                                // simple abs-threshold flush outperformed the original
+                                // unsafe-cast detection).
+                                var outputSample = line[bufferPos]
+                                if outputSample.magnitude < 1.0e-6 {
+                                    outputSample = 0
+                                }
+
+                                filterStore = (outputSample * damp2) + (filterStore * damp1)
+                                if filterStore.magnitude < 1.0e-6 {
+                                    filterStore = 0
+                                }
+
+                                line[bufferPos] = inputSample + (filterStore * feedback)
+                                output[blockPos] += outputSample
+                                t += 1
+                            }
+
+                            bufferIndex += rem
+                            blockIndex += rem
+                        }
                     }
-
-                    filterStore = (output * damp2) + (filterStore * damp1)
-                    if abs(filterStore) < 1.0e-6 {
-                        filterStore = 0
-                    }
-
-                    buffer[bufferPos] = input + (filterStore * feedback)
-                    outputBlock[blockPos] += output
                 }
-
-                bufferIndex += rem
-                blockIndex += rem
             }
         }
     }
@@ -318,34 +354,49 @@ final class Reverb {
             }
         }
 
+        /// Written for unoptimized builds, as `CombFilter.process` is.
         func process(block: inout [Float]) {
-            var blockIndex = 0
-            while blockIndex < block.count {
-                if bufferIndex == buffer.count {
-                    bufferIndex = 0
-                }
+            var bufferIndex = self.bufferIndex
+            defer { self.bufferIndex = bufferIndex }
+            let feedback = self.feedback
 
-                let srcRem = buffer.count - bufferIndex
-                let dstRem = block.count - blockIndex
-                let rem = min(srcRem, dstRem)
+            buffer.withUnsafeMutableBufferPointer { delayLine in
+                block.withUnsafeMutableBufferPointer { blockBuffer in
+                    guard let line = delayLine.baseAddress, let samples = blockBuffer.baseAddress else { return }
+                    let bufferCount = delayLine.count
+                    let blockCount = blockBuffer.count
 
-                for t in 0..<rem {
-                    let blockPos = blockIndex + t
-                    let bufferPos = bufferIndex + t
+                    var blockIndex = 0
+                    while blockIndex < blockCount {
+                        if bufferIndex == bufferCount {
+                            bufferIndex = 0
+                        }
 
-                    let input = block[blockPos]
+                        let srcRem = bufferCount - bufferIndex
+                        let dstRem = blockCount - blockIndex
+                        let rem = dstRem < srcRem ? dstRem : srcRem
 
-                    var bufout = buffer[bufferPos]
-                    if abs(bufout) < 1.0e-6 {
-                        bufout = 0
+                        var t = 0
+                        while t < rem {
+                            let blockPos = blockIndex + t
+                            let bufferPos = bufferIndex + t
+
+                            let input = samples[blockPos]
+
+                            var bufout = line[bufferPos]
+                            if bufout.magnitude < 1.0e-6 {
+                                bufout = 0
+                            }
+
+                            samples[blockPos] = bufout - input
+                            line[bufferPos] = input + (bufout * feedback)
+                            t += 1
+                        }
+
+                        bufferIndex += rem
+                        blockIndex += rem
                     }
-
-                    block[blockPos] = bufout - input
-                    buffer[bufferPos] = input + (bufout * feedback)
                 }
-
-                bufferIndex += rem
-                blockIndex += rem
             }
         }
     }
