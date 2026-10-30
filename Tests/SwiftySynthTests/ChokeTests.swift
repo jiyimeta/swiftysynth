@@ -76,7 +76,24 @@ struct ChokeTests {
         synth.choke(key: 60, on: 0)
         let after = render(synth, seconds: 0.01)
 
-        #expect(peak(after.prefix(Self.block)[...]) <= peak(before.suffix(Self.block)[...]) * 1.01)
+        let lastPeak = peak(before.suffix(Self.block)[...])
+        #expect(peak(after.prefix(Self.block)[...]) <= lastPeak * 1.01)
+        // A fade, not a cut: the first block keeps most of the level, and 5 ms in it is still well above silence.
+        #expect(peak(after.prefix(Self.block)[...]) >= lastPeak * 0.8)
+        #expect(decibels(rms(window(after, at: 0.005)) / rms(before.suffix(441))) > -30)
+    }
+
+    @Test func chokeAfterAPedalHeldNoteOffStillStops() throws {
+        let synth = try makeSynth()
+        synth.processMidiMessage(channel: 0, command: 0xB0, data1: 64, data2: 127)
+        synth.noteOn(key: 60, velocity: 100, on: 0)
+        let before = render(synth, seconds: 0.2)
+        synth.noteOff(key: 60, on: 0)  // held by the pedal
+        _ = render(synth, seconds: 0.05)
+        synth.choke(key: 60, on: 0)
+        let after = render(synth, seconds: 0.2)
+
+        #expect(decibels(rms(window(after, at: 0.06)) / rms(before.suffix(441))) < -60)
     }
 
     @Test func chokeIgnoresHoldPedal() throws {
