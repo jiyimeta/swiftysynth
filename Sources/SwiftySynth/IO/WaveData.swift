@@ -93,16 +93,26 @@ final class ByteBuffer {
     private let storage: UnsafeMutableRawBufferPointer
     let bytes: UnsafeRawBufferPointer
 
-    init(copying raw: UnsafeRawBufferPointer) {
-        storage = UnsafeMutableRawBufferPointer.allocate(byteCount: Swift.max(raw.count, 1), alignment: 16)
+    private init(byteCount: Int) {
+        storage = UnsafeMutableRawBufferPointer.allocate(byteCount: Swift.max(byteCount, 1), alignment: 16)
+        bytes = UnsafeRawBufferPointer(start: storage.baseAddress, count: byteCount)
+    }
+
+    convenience init(copying raw: UnsafeRawBufferPointer) {
+        self.init(byteCount: raw.count)
         if raw.count > 0 {
             storage.copyMemory(from: raw)
         }
-        bytes = UnsafeRawBufferPointer(start: storage.baseAddress, count: raw.count)
     }
 
+    /// Copies inside `withUnsafeBytes`: the pointer it hands out is valid only there. A `Data` of up to 14 bytes keeps
+    /// its bytes inline, so that pointer is to a temporary copy that an optimized build reuses as soon as the closure
+    /// returns.
     convenience init(copying data: Data) {
-        self.init(copying: data.withUnsafeBytes { UnsafeRawBufferPointer($0) })
+        self.init(byteCount: data.count)
+        if data.count > 0 {
+            data.withUnsafeBytes { storage.copyMemory(from: $0) }
+        }
     }
 
     deinit {

@@ -21,6 +21,19 @@ struct BinaryReaderTests {
         #expect(reader.position == 14)
     }
 
+    /// `Data` of up to 14 bytes keeps its bytes inline in the value, and `withUnsafeBytes` hands the closure a pointer
+    /// to a temporary copy that is dead once the closure returns, so the reader must copy the bytes inside it. Only an
+    /// optimized build reuses that memory, so a pointer escaping the closure shows up under `swift test -c release`.
+    @Test(arguments: 1...14) func readerOverInlineDataReadsItsOwnBytes(count: Int) throws {
+        let expected = (0..<count).map { UInt8(0xA0 + $0) }
+        let reader = BinaryReader(data: Data(expected))
+        var actual: [UInt8] = []
+        for _ in 0..<count {
+            actual.append(try reader.readUInt8())
+        }
+        #expect(actual == expected)
+    }
+
     @Test func readsFourCCAndFixedLengthStrings() throws {
         var w = ByteWriter()
         w.fourCC("RIFF")

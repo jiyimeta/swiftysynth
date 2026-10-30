@@ -13,6 +13,13 @@ follow [Semantic Versioning](https://semver.org/).
   build can play back in real time. Release builds got faster too (2.2% → 1.2%). Rendered PCM is bit-identical, debug
   and release alike (see the README's "Performance in debug builds").
 
+### Fixed
+
+- `SoundFont(data:)` and `MidiFile(data:)` copied their bytes through a pointer that had escaped `withUnsafeBytes`.
+  For a `Data` of up to 14 bytes (stored inline) that pointer is to a temporary copy, so optimized builds read garbage
+  — which made 30 of the parsing tests fail under `swift test -c release` since 0.3.0. Real SoundFonts and MIDI files
+  are larger and heap-backed, so they were not seen to be affected.
+
 ## 0.4.0 - 2026-10-31
 
 ### Added
