@@ -64,7 +64,13 @@ public struct WaveData: RandomAccessCollection, @unchecked Sendable {
         let lower = Swift.max(0, range.lowerBound)
         let upper = Swift.min(count, range.upperBound)
         guard lower < upper else { return }
+        #if canImport(Darwin) || canImport(Glibc) || canImport(Android)
         let pageSize = Int(getpagesize())
+        #else
+        // No `getpagesize` here (Windows), and no mapping either — `MappedFile` is nil off the three platforms above,
+        // so the guard has already returned. Windows' page size, for the compiler.
+        let pageSize = 4096
+        #endif
         let start = UInt(bitPattern: UnsafeRawPointer(base + lower)) & ~UInt(pageSize - 1)
         let end = UInt(bitPattern: UnsafeRawPointer(base + upper))
         guard let pageStart = UnsafeRawPointer(bitPattern: start) else { return }

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Builds on Windows again: `WaveData.prefetch` called `getpagesize()`, which Windows does not have (0.4.0's
+  memory-mapped `SoundFont(url:)`). Windows maps no file — `SoundFont(url:)` reads it into memory there, as before —
+  so the page size is only for the compiler.
+
 ## 0.4.1 - 2026-10-31
 
 ### Changed
